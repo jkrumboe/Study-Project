@@ -1,0 +1,28 @@
+{
+"type": "FeatureCollection",
+"name": "Iceland_Seeds_21",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::5325" } },
+"features": [
+{ "type": "Feature", "properties": { "fid": 1 }, "geometry": { "type": "Point", "coordinates": [ 1690237.017687238985673, 148953.104190323268995 ] } },
+{ "type": "Feature", "properties": { "fid": 2 }, "geometry": { "type": "Point", "coordinates": [ 1671374.377986305393279, 165983.259850316913798 ] } },
+{ "type": "Feature", "properties": { "fid": 3 }, "geometry": { "type": "Point", "coordinates": [ 1667255.601355557329953, 188341.711417172889924 ] } },
+{ "type": "Feature", "properties": { "fid": 4 }, "geometry": { "type": "Point", "coordinates": [ 1641742.776274034753442, 263830.23622530431021 ] } },
+{ "type": "Feature", "properties": { "fid": 5 }, "geometry": { "type": "Point", "coordinates": [ 1707515.64716230193153, 277480.077917140093632 ] } },
+{ "type": "Feature", "properties": { "fid": 6 }, "geometry": { "type": "Point", "coordinates": [ 1473319.181860437151045, 287273.08744371519424 ] } },
+{ "type": "Feature", "properties": { "fid": 7 }, "geometry": { "type": "Point", "coordinates": [ 1509606.167404679581523, 407672.303952465765178 ] } },
+{ "type": "Feature", "properties": { "fid": 8 }, "geometry": { "type": "Point", "coordinates": [ 1546659.886750608216971, 437948.202347338956315 ] } },
+{ "type": "Feature", "properties": { "fid": 9 }, "geometry": { "type": "Point", "coordinates": [ 1697524.170211999444291, 176862.773286124691367 ] } },
+{ "type": "Feature", "properties": { "fid": 10 }, "geometry": { "type": "Point", "coordinates": [ 1713437.615978184854612, 371908.354111006890889 ] } },
+{ "type": "Feature", "properties": { "fid": 11 }, "geometry": { "type": "Point", "coordinates": [ 1710524.209260786883533, 421866.506055453326553 ] } },
+{ "type": "Feature", "properties": { "fid": 12 }, "geometry": { "type": "Point", "coordinates": [ 1746395.785921959904954, 413844.27829811105039 ] } },
+{ "type": "Feature", "properties": { "fid": 13 }, "geometry": { "type": "Point", "coordinates": [ 1810583.059070259332657, 237169.342751981748734 ] } },
+{ "type": "Feature", "properties": { "fid": 14 }, "geometry": { "type": "Point", "coordinates": [ 1751965.239283828064799, 272730.26124411332421 ] } },
+{ "type": "Feature", "properties": { "fid": 15 }, "geometry": { "type": "Point", "coordinates": [ 1862985.701119784964249, 282400.466319544066209 ] } },
+{ "type": "Feature", "properties": { "fid": 16 }, "geometry": { "type": "Point", "coordinates": [ 1931432.035817799391225, 298003.115583235456143 ] } },
+{ "type": "Feature", "properties": { "fid": 17 }, "geometry": { "type": "Point", "coordinates": [ 1919251.761852436233312, 304270.19526799331652 ] } },
+{ "type": "Feature", "properties": { "fid": 18 }, "geometry": { "type": "Point", "coordinates": [ 1914774.259981656679884, 316431.294578355620615 ] } },
+{ "type": "Feature", "properties": { "fid": 19 }, "geometry": { "type": "Point", "coordinates": [ 1929657.196918836794794, 351195.309716949239373 ] } },
+{ "type": "Feature", "properties": { "fid": 20 }, "geometry": { "type": "Point", "coordinates": [ 1933827.593886059941724, 366436.287576048809569 ] } },
+{ "type": "Feature", "properties": { "fid": 21 }, "geometry": { "type": "Point", "coordinates": [ 1897382.766447224188596, 373287.223208571202122 ] } }
+]
+}
