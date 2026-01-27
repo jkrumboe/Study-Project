@@ -25,6 +25,7 @@ Date: January 2026
 
 import os
 import sys
+import gc
 import argparse
 import warnings
 import json
@@ -65,7 +66,8 @@ DEFAULT_CONFIG = {
     'date_start': "2025-07-01",  # Start date (YYYY-MM-DD)
     'date_end': "2025-07-31",  # End date (YYYY-MM-DD)
     'max_iterations': 50,  # Maximum iterations for spatial expansion
-    'max_scenes': 100  # Maximum scenes to process per cell
+    'max_scenes': 20,  # Maximum scenes to process per cell (reduced from 100 for memory)
+    'low_memory': True  # Memory-efficient mode: write results to disk incrementally
 }
 
 
@@ -483,7 +485,7 @@ def apply_spatial_expansion(grid, cell_id, snow_percentage, threshold):
 # MAIN MONITORING FUNCTION
 # =============================================================================
 
-def run_glacier_monitoring(seeds, config, verbose=True):
+def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
     """
     Execute complete glacier monitoring algorithm with spatial expansion.
     
@@ -500,19 +502,34 @@ def run_glacier_monitoring(seeds, config, verbose=True):
         Configuration dictionary with all parameters
     verbose : bool
         If True, print progress information
+    output_dir : Path, optional
+        Output directory for low-memory mode (writes NDSI tiles to disk)
     
     Returns:
     --------
     dict : Results containing:
-        - 'ndsi_combined': xr.DataArray with combined NDSI grid
-        - 'snow_mask_combined': xr.DataArray with final snow/ice mask
+        - 'ndsi_combined': xr.DataArray with combined NDSI grid (None in low-memory mode)
+        - 'snow_mask_combined': xr.DataArray with final snow/ice mask (None in low-memory mode)
         - 'grid': gpd.GeoDataFrame with processed cells
         - 'statistics': dict with processing statistics
+        - 'tile_dir': Path to saved tiles (only in low-memory mode)
     """
+    low_memory = config.get('low_memory', False)
+    
     if verbose:
         print("=" * 80)
         print("GLACIER MONITORING ALGORITHM - SPATIAL EXPANSION")
+        if low_memory:
+            print("(LOW MEMORY MODE: Writing tiles to disk)")
         print("=" * 80)
+    
+    # Create temp directory for tiles in low-memory mode
+    tile_dir = None
+    if low_memory and output_dir:
+        tile_dir = Path(output_dir) / "ndsi_tiles"
+        tile_dir.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(f"   Tile directory: {tile_dir}")
     
     # Step 1: Create grid and mark initial candidates
     if verbose:
@@ -521,17 +538,24 @@ def run_glacier_monitoring(seeds, config, verbose=True):
     grid = create_grid(config['bounding_box'], config['grid_size'], config['epsg_iceland'])
     grid = mark_candidate_cells(grid, seeds)
     grid['is_processed'] = False
-    grid['ndsi_median'] = None
     grid['snow_percentage'] = None
+    
+    # Only store NDSI in grid if NOT in low-memory mode
+    if not low_memory:
+        grid['ndsi_median'] = None
     
     initial_candidates = grid['is_candidate'].sum()
     
     if verbose:
         print(f"   Grid created: {len(grid)} cells")
         print(f"   Initial candidates (cells with seeds): {initial_candidates}")
+        if low_memory:
+            print(f"   Memory mode: LOW (tiles saved to disk)")
+        else:
+            print(f"   Memory mode: NORMAL (results in RAM)")
     
-    # Prepare result storage
-    ndsi_results = {}
+    # Prepare result storage (only used in normal mode)
+    ndsi_results = {} if not low_memory else None
     cell_bounds_dict = {}
     
     # Step 2: Iteration loop with spatial expansion
@@ -600,16 +624,28 @@ def run_glacier_monitoring(seeds, config, verbose=True):
                     print("NDSI computation failed")
                 grid_idx = grid[grid['cell_id'] == cell_id].index[0]
                 grid.at[grid_idx, 'is_processed'] = True
+                gc.collect()  # Free memory
                 continue
             
-            # Store result
-            ndsi_results[cell_id] = result['ndsi_median']
-            cell_bounds_dict[cell_id] = cell_bounds
+            # Store result - either in memory or on disk
             snow_pct = result['snow_percentage']
+            cell_bounds_dict[cell_id] = cell_bounds
             
-            # Add results to grid
+            if low_memory and tile_dir:
+                # Save NDSI tile to disk immediately, don't keep in memory
+                tile_path = tile_dir / f"ndsi_cell_{cell_id}.tif"
+                ndsi_da = result['ndsi_median']
+                ndsi_da.rio.write_crs(f"EPSG:{config['epsg_iceland']}", inplace=True)
+                ndsi_da.rio.to_raster(tile_path, driver='GTiff', compress='lzw')
+                del ndsi_da, result  # Free memory immediately
+            else:
+                # Store in memory (original behavior)
+                ndsi_results[cell_id] = result['ndsi_median']
+                grid_idx = grid[grid['cell_id'] == cell_id].index[0]
+                grid.at[grid_idx, 'ndsi_median'] = result['ndsi_median']
+            
+            # Add snow percentage to grid
             grid_idx = grid[grid['cell_id'] == cell_id].index[0]
-            grid.at[grid_idx, 'ndsi_median'] = result['ndsi_median']
             grid.at[grid_idx, 'snow_percentage'] = snow_pct
             
             if verbose:
@@ -628,85 +664,127 @@ def run_glacier_monitoring(seeds, config, verbose=True):
             # Mark as processed
             grid.at[grid_idx, 'is_processed'] = True
             total_processed += 1
+            
+            # Force garbage collection to free memory
+            gc.collect()
         
         total_expansion_adds += iteration_adds
         
         if verbose:
             print(f"   Summary: {len(unprocessed)} processed, {cells_with_snow} with snow, {iteration_adds} new candidates")
     
-    # Step 3: Combine all NDSI results into single grid
-    if verbose:
-        print(f"\n[Step 3] Combining {len(ndsi_results)} NDSI results into unified grid...")
-    
-    if len(ndsi_results) == 0:
-        print("ERROR: No valid NDSI results to combine!")
-        return None
-    
-    # Determine combined grid extent
-    all_bounds = list(cell_bounds_dict.values())
-    global_minx = min(b[0] for b in all_bounds)
-    global_miny = min(b[1] for b in all_bounds)
-    global_maxx = max(b[2] for b in all_bounds)
-    global_maxy = max(b[3] for b in all_bounds)
-    
-    # Create combined grid (10m resolution)
-    combined_x = np.arange(global_minx, global_maxx, 10)
-    combined_y = np.arange(global_miny, global_maxy, 10)
-    combined_ndsi = np.full((len(combined_y), len(combined_x)), np.nan, dtype=float)
-    
-    # Fill in NDSI values from each cell
-    for cell_id, ndsi_array in ndsi_results.items():
-        bounds = cell_bounds_dict[cell_id]
-        minx, miny, maxx, maxy = bounds
+    # Step 3: Combine results or calculate statistics from tiles
+    if low_memory:
+        # In low-memory mode, we don't combine - just calculate stats from grid
+        if verbose:
+            print(f"\n[Step 3] Calculating statistics (low-memory mode - tiles saved separately)...")
         
-        # Find indices in combined grid
-        x_start = int((minx - global_minx) / 10)
-        x_end = int((maxx - global_minx) / 10)
-        y_start = int((miny - global_miny) / 10)
-        y_end = int((maxy - global_miny) / 10)
+        # Calculate statistics from the grid's snow_percentage column
+        processed_grid = grid[grid['is_processed'] == True]
+        total_snow_pct = processed_grid['snow_percentage'].mean() if len(processed_grid) > 0 else 0
         
-        # Insert NDSI values
-        ndsi_values = ndsi_array.values
-        combined_ndsi[y_start:y_end, x_start:x_end] = ndsi_values
-    
-    # Create xarray DataArray
-    ndsi_combined = xr.DataArray(
-        combined_ndsi,
-        dims=['y', 'x'],
-        coords={'x': combined_x, 'y': combined_y},
-        attrs={
-            'crs': f'EPSG:{config["epsg_iceland"]}',
-            'description': 'Combined median NDSI from all processed cells',
-            'algorithm': 'Zarr-optimized glacier monitoring with spatial expansion'
+        # Estimate pixels based on grid size (10km = 1000 pixels at 10m resolution)
+        pixels_per_cell = (config['grid_size'] / 10) ** 2
+        valid_pixels = int(total_processed * pixels_per_cell)
+        snow_pixels = int(valid_pixels * (total_snow_pct / 100)) if total_snow_pct else 0
+        
+        statistics = {
+            'total_cells_processed': total_processed,
+            'initial_candidates': int(initial_candidates),
+            'expansion_added_cells': total_expansion_adds,
+            'iterations': iteration,
+            'valid_pixels': valid_pixels,
+            'snow_ice_pixels': snow_pixels,
+            'snow_ice_coverage_km2': (snow_pixels * 10 * 10) / 1e6,
+            'total_valid_area_km2': (valid_pixels * 10 * 10) / 1e6,
+            'snow_ice_percentage': total_snow_pct,
+            'mode': 'low_memory',
+            'tile_directory': str(tile_dir) if tile_dir else None
         }
-    )
-    
-    # Create final snow/ice mask
-    snow_mask_combined = ndsi_combined >= config['ndsi_threshold']
-    
-    # Calculate statistics
-    valid_pixels = np.sum(~np.isnan(combined_ndsi))
-    snow_pixels = np.sum(snow_mask_combined.values)
-    snow_area_km2 = (snow_pixels * 10 * 10) / 1e6
-    total_area_km2 = (valid_pixels * 10 * 10) / 1e6
-    
-    statistics = {
-        'total_cells_processed': total_processed,
-        'initial_candidates': int(initial_candidates),
-        'expansion_added_cells': total_expansion_adds,
-        'iterations': iteration,
-        'valid_pixels': int(valid_pixels),
-        'snow_ice_pixels': int(snow_pixels),
-        'snow_ice_coverage_km2': snow_area_km2,
-        'total_valid_area_km2': total_area_km2,
-        'snow_ice_percentage': 100.0 * snow_pixels / valid_pixels if valid_pixels > 0 else 0
-    }
+        
+        ndsi_combined = None
+        snow_mask_combined = None
+        
+    else:
+        # Normal mode: combine all results in memory
+        if verbose:
+            print(f"\n[Step 3] Combining {len(ndsi_results)} NDSI results into unified grid...")
+        
+        if len(ndsi_results) == 0:
+            print("ERROR: No valid NDSI results to combine!")
+            return None
+        
+        # Determine combined grid extent
+        all_bounds = list(cell_bounds_dict.values())
+        global_minx = min(b[0] for b in all_bounds)
+        global_miny = min(b[1] for b in all_bounds)
+        global_maxx = max(b[2] for b in all_bounds)
+        global_maxy = max(b[3] for b in all_bounds)
+        
+        # Create combined grid (10m resolution)
+        combined_x = np.arange(global_minx, global_maxx, 10)
+        combined_y = np.arange(global_miny, global_maxy, 10)
+        combined_ndsi = np.full((len(combined_y), len(combined_x)), np.nan, dtype=np.float32)  # Use float32 to save memory
+        
+        # Fill in NDSI values from each cell
+        for cell_id, ndsi_array in ndsi_results.items():
+            bounds = cell_bounds_dict[cell_id]
+            minx, miny, maxx, maxy = bounds
+            
+            # Find indices in combined grid
+            x_start = int((minx - global_minx) / 10)
+            x_end = int((maxx - global_minx) / 10)
+            y_start = int((miny - global_miny) / 10)
+            y_end = int((maxy - global_miny) / 10)
+            
+            # Insert NDSI values
+            ndsi_values = ndsi_array.values
+            combined_ndsi[y_start:y_end, x_start:x_end] = ndsi_values
+        
+        # Free the individual results
+        del ndsi_results
+        gc.collect()
+        
+        # Create xarray DataArray
+        ndsi_combined = xr.DataArray(
+            combined_ndsi,
+            dims=['y', 'x'],
+            coords={'x': combined_x, 'y': combined_y},
+            attrs={
+                'crs': f'EPSG:{config["epsg_iceland"]}',
+                'description': 'Combined median NDSI from all processed cells',
+                'algorithm': 'Zarr-optimized glacier monitoring with spatial expansion'
+            }
+        )
+        
+        # Create final snow/ice mask
+        snow_mask_combined = ndsi_combined >= config['ndsi_threshold']
+        
+        # Calculate statistics
+        valid_pixels = int(np.sum(~np.isnan(combined_ndsi)))
+        snow_pixels = int(np.sum(snow_mask_combined.values))
+        snow_area_km2 = (snow_pixels * 10 * 10) / 1e6
+        total_area_km2 = (valid_pixels * 10 * 10) / 1e6
+        
+        statistics = {
+            'total_cells_processed': total_processed,
+            'initial_candidates': int(initial_candidates),
+            'expansion_added_cells': total_expansion_adds,
+            'iterations': iteration,
+            'valid_pixels': valid_pixels,
+            'snow_ice_pixels': snow_pixels,
+            'snow_ice_coverage_km2': snow_area_km2,
+            'total_valid_area_km2': total_area_km2,
+            'snow_ice_percentage': 100.0 * snow_pixels / valid_pixels if valid_pixels > 0 else 0,
+            'mode': 'normal'
+        }
     
     # Print final statistics
     if verbose:
         print("\n" + "=" * 80)
         print("ALGORITHM COMPLETED - FINAL STATISTICS")
         print("=" * 80)
+        print(f"Mode:                         {statistics.get('mode', 'normal')}")
         print(f"Total cells processed:        {statistics['total_cells_processed']}")
         print(f"  - Initial candidates:       {statistics['initial_candidates']}")
         print(f"  - Added by expansion:       {statistics['expansion_added_cells']}")
@@ -716,13 +794,16 @@ def run_glacier_monitoring(seeds, config, verbose=True):
         print(f"Snow/Ice area:                {statistics['snow_ice_coverage_km2']:.2f} km²")
         print(f"Total analyzed area:          {statistics['total_valid_area_km2']:.2f} km²")
         print(f"Snow/Ice coverage:            {statistics['snow_ice_percentage']:.2f}%")
+        if low_memory and tile_dir:
+            print(f"Tiles saved to:               {tile_dir}")
         print("=" * 80)
     
     return {
         'ndsi_combined': ndsi_combined,
         'snow_mask_combined': snow_mask_combined,
         'grid': grid,
-        'statistics': statistics
+        'statistics': statistics,
+        'tile_dir': tile_dir
     }
 
 
@@ -736,8 +817,8 @@ def export_results(results, output_dir, config):
     
     Exports:
     - Grid with processed cells as GeoJSON
-    - Combined NDSI as GeoTIFF
-    - Snow/Ice mask as GeoTIFF
+    - Combined NDSI as GeoTIFF (only in normal mode)
+    - Snow/Ice mask as GeoTIFF (only in normal mode)
     - Statistics as JSON
     
     Parameters:
@@ -749,6 +830,8 @@ def export_results(results, output_dir, config):
     config : dict
         Configuration dictionary
     """
+    low_memory = config.get('low_memory', False)
+    
     print("\n" + "=" * 80)
     print("EXPORTING RESULTS")
     print("=" * 80)
@@ -763,26 +846,40 @@ def export_results(results, output_dir, config):
     grid_output = output_dir / f"processed_grid_{timestamp}.geojson"
     grid_export = results['grid'][results['grid']['is_processed']].copy()
     
-    # Remove ndsi_median column (contains xarray objects, not JSON serializable)
-    grid_export = grid_export.drop(columns=['ndsi_median'])
+    # Remove ndsi_median column if it exists (contains xarray objects, not JSON serializable)
+    if 'ndsi_median' in grid_export.columns:
+        grid_export = grid_export.drop(columns=['ndsi_median'])
     
     grid_export.to_file(grid_output, driver='GeoJSON')
     print(f"[1/4] Grid exported: {grid_output}")
     
-    # 2. Export combined NDSI as GeoTIFF
-    ndsi_output = output_dir / f"ndsi_combined_{timestamp}.tif"
-    results['ndsi_combined'].rio.to_raster(ndsi_output, driver='GTiff', compress='lzw')
-    print(f"[2/4] NDSI raster exported: {ndsi_output}")
-    
-    # 3. Export snow mask as GeoTIFF
-    mask_output = output_dir / f"snow_mask_{timestamp}.tif"
-    results['snow_mask_combined'].astype(np.uint8).rio.to_raster(mask_output, driver='GTiff', compress='lzw')
-    print(f"[3/4] Snow mask exported: {mask_output}")
+    if low_memory:
+        # In low-memory mode, tiles are already saved
+        tile_dir = results.get('tile_dir')
+        print(f"[2/4] NDSI tiles already saved: {tile_dir}")
+        print(f"[3/4] Snow masks: Generate from tiles using NDSI threshold {config['ndsi_threshold']}")
+    else:
+        # 2. Export combined NDSI as GeoTIFF
+        if results['ndsi_combined'] is not None:
+            ndsi_output = output_dir / f"ndsi_combined_{timestamp}.tif"
+            results['ndsi_combined'].rio.write_crs(f"EPSG:{config['epsg_iceland']}", inplace=True)
+            results['ndsi_combined'].rio.to_raster(ndsi_output, driver='GTiff', compress='lzw')
+            print(f"[2/4] NDSI raster exported: {ndsi_output}")
+        else:
+            print(f"[2/4] NDSI raster: skipped (not available)")
+        
+        # 3. Export snow mask as GeoTIFF
+        if results['snow_mask_combined'] is not None:
+            mask_output = output_dir / f"snow_mask_{timestamp}.tif"
+            results['snow_mask_combined'].astype(np.uint8).rio.to_raster(mask_output, driver='GTiff', compress='lzw')
+            print(f"[3/4] Snow mask exported: {mask_output}")
+        else:
+            print(f"[3/4] Snow mask: skipped (not available)")
     
     # 4. Export statistics as JSON
     stats_output = output_dir / f"statistics_{timestamp}.json"
     stats_with_config = {
-        'configuration': config,
+        'configuration': {k: v for k, v in config.items() if not callable(v)},
         'results': results['statistics']
     }
     with open(stats_output, 'w') as f:
@@ -848,6 +945,10 @@ Examples:
                         help=f'Maximum scenes per cell (default: {DEFAULT_CONFIG["max_scenes"]})')
     parser.add_argument('--max-iterations', type=int, default=DEFAULT_CONFIG['max_iterations'],
                         help=f'Maximum iterations (default: {DEFAULT_CONFIG["max_iterations"]})')
+    parser.add_argument('--low-memory', action='store_true', default=DEFAULT_CONFIG['low_memory'],
+                        help='Enable low-memory mode: saves tiles to disk instead of RAM (recommended for large areas)')
+    parser.add_argument('--no-low-memory', action='store_true',
+                        help='Disable low-memory mode: keep all results in RAM')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress progress output')
     
@@ -863,6 +964,12 @@ Examples:
     config['max_scenes'] = args.max_scenes
     config['max_iterations'] = args.max_iterations
     
+    # Handle low-memory mode flags
+    if args.no_low_memory:
+        config['low_memory'] = False
+    else:
+        config['low_memory'] = args.low_memory
+    
     verbose = not args.quiet
     
     # Print header
@@ -877,6 +984,7 @@ Examples:
         print(f"NDSI threshold:    {args.ndsi_threshold}")
         print(f"Snow threshold:    {args.snow_threshold * 100}%")
         print(f"Max scenes/cell:   {args.max_scenes}")
+        print(f"Low-memory mode:   {'ON' if config['low_memory'] else 'OFF'}")
         print("=" * 80)
     
     # Load seeds
@@ -914,9 +1022,17 @@ Examples:
         print(f"ERROR: Failed to load seeds from {args.seeds}: {e}")
         return 1
     
+    # Prepare output directory
+    output_dir = Path(args.output)
+    
     # Run monitoring algorithm
     try:
-        results = run_glacier_monitoring(seeds, config, verbose=verbose)
+        results = run_glacier_monitoring(
+            seeds, 
+            config, 
+            verbose=verbose, 
+            output_dir=output_dir  # Pass output dir for low-memory tile saving
+        )
         
         if results is None:
             print("ERROR: Monitoring algorithm failed")
@@ -930,7 +1046,6 @@ Examples:
     
     # Export results
     try:
-        output_dir = Path(args.output)
         export_results(results, output_dir, config)
     
     except Exception as e:
