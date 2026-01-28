@@ -18,6 +18,9 @@ pandas>=2.0.0
 # STAC catalog access
 pystac-client>=0.7.0
 
+# Progress bars
+tqdm>=4.65.0
+
 # Optional: For better performance with Zarr
 zarr>=2.16.0
 dask>=2023.0.0
