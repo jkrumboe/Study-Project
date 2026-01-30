@@ -60,6 +60,11 @@ from pystac_client import Client
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import requests
+import threading
+import urllib3
+
+# Suppress SSL warnings for Proxmox self-signed certs
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Global caches to avoid redundant operations
 _failed_zarr_urls = set()  # Track URLs that failed to load
@@ -74,19 +79,280 @@ _stac_catalog = None  # Reuse STAC connection
 DEFAULT_CONFIG = {
     'epsg_iceland': 5325,  # ISN2004 / Lambert 2004 (Iceland's national projection)
     'bounding_box': [1400000, 100000, 2000000, 500000],  # [minx, miny, maxx, maxy] in ISN2004
-    'grid_size': 1000,  # Grid cell size in meters (1 km)
+    'grid_size': 10000,  # Grid cell size in meters (1 km)
     'ndsi_threshold': 0.42,  # Snow/ice classification threshold
     'snow_percentage_threshold': 0.30,  # Spatial expansion threshold (30% coverage)
     'stac_url': "https://stac.core.eopf.eodc.eu",  # EOPF STAC Catalog endpoint
     'date_start': "2025-07-01",  # Start date (YYYY-MM-DD)
     'date_end': "2025-07-31",  # End date (YYYY-MM-DD)
-    'max_iterations': 5,  # Maximum iterations for spatial expansion
+    'max_iterations': 2,  # Maximum iterations for spatial expansion
     'max_scenes': 100,  # Maximum scenes to process per cell
     'low_memory': True,  # Memory-efficient mode: write results to disk incrementally
     'max_cloud_cover': 50,  # Filter out scenes with more than X% cloud cover (currently disabled)
     'max_retries': 3,  # Number of retries for failed network requests
     'validate_zarr': True  # Validate Zarr store accessibility before processing
 }
+
+# Proxmox monitoring configuration
+PROXMOX_CONFIG = {
+    'enabled': False,  # Set to True to enable Proxmox monitoring
+    'host': '192.168.2.119',
+    'port': 8006,
+    'node': 'think1',
+    'vmid': 103,
+    'api_token_id': 'monitor@think1@pam!monitorthink1',
+    'api_token_secret': '109ee029-4668-45be-9572-9a1116a9ed95',
+    'poll_interval': 2,  # seconds between status polls (high-resolution monitoring)
+    'fetch_rrd': True,  # Also fetch RRD timeline data at end
+    'rrd_timeframe': 'hour'  # hour | day | week | month | year
+}
+
+
+# =============================================================================
+# PROXMOX MONITORING CLASS
+# =============================================================================
+
+class ProxmoxMonitor:
+    """
+    Monitor VM performance using Proxmox API.
+    
+    Collects CPU, memory, network, and disk I/O metrics during processing.
+    Runs in a background thread to avoid blocking the main algorithm.
+    """
+    
+    def __init__(self, config=None):
+        """
+        Initialize the Proxmox monitor.
+        
+        Parameters:
+        -----------
+        config : dict, optional
+            Proxmox configuration. Uses PROXMOX_CONFIG defaults if not provided.
+        """
+        self.config = config or PROXMOX_CONFIG.copy()
+        self.enabled = self.config.get('enabled', False)
+        self.base_url = f"https://{self.config['host']}:{self.config['port']}/api2/json"
+        self.headers = {
+            'Authorization': f"PVEAPIToken={self.config['api_token_id']}={self.config['api_token_secret']}"
+        }
+        
+        # Monitoring state
+        self.samples = []  # High-resolution samples from status/current
+        self.events = []  # Algorithm events (cell processing, iterations, etc.)
+        self.start_time = None
+        self.end_time = None
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._lock = threading.Lock()
+        
+    def _api_get(self, endpoint):
+        """Make a GET request to the Proxmox API."""
+        url = f"{self.base_url}/{endpoint}"
+        try:
+            response = requests.get(url, headers=self.headers, verify=False, timeout=5)
+            response.raise_for_status()
+            return response.json().get('data', {})
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def get_vm_status(self):
+        """Get current VM status (CPU, memory, network, disk)."""
+        node = self.config['node']
+        vmid = self.config['vmid']
+        return self._api_get(f"nodes/{node}/qemu/{vmid}/status/current")
+    
+    def get_rrd_data(self, timeframe=None):
+        """Get RRD timeline data (aggregated metrics over time)."""
+        node = self.config['node']
+        vmid = self.config['vmid']
+        tf = timeframe or self.config.get('rrd_timeframe', 'hour')
+        return self._api_get(f"nodes/{node}/qemu/{vmid}/rrddata?timeframe={tf}&cf=AVERAGE")
+    
+    def _polling_loop(self):
+        """Background thread that polls VM status at regular intervals."""
+        interval = self.config.get('poll_interval', 2)
+        
+        while not self._stop_event.is_set():
+            status = self.get_vm_status()
+            if 'error' not in status:
+                sample = {
+                    'time': time.time(),
+                    'time_iso': datetime.now().isoformat(),
+                    'cpu': status.get('cpu', 0),
+                    'cpu_percent': status.get('cpu', 0) * 100,
+                    'mem': status.get('mem', 0),
+                    'maxmem': status.get('maxmem', 0),
+                    'mem_percent': 100 * status.get('mem', 0) / status.get('maxmem', 1) if status.get('maxmem') else 0,
+                    'netin': status.get('netin', 0),
+                    'netout': status.get('netout', 0),
+                    'diskread': status.get('diskread', 0),
+                    'diskwrite': status.get('diskwrite', 0),
+                    'uptime': status.get('uptime', 0)
+                }
+                with self._lock:
+                    self.samples.append(sample)
+            
+            self._stop_event.wait(interval)
+    
+    def add_event(self, event_type, details=None):
+        """
+        Record an algorithm event for correlation with metrics.
+        
+        Parameters:
+        -----------
+        event_type : str
+            Type of event (e.g., 'iteration_start', 'cell_processed', 'stac_query')
+        details : dict, optional
+            Additional event details
+        """
+        if not self.enabled:
+            return
+        
+        event = {
+            'time': time.time(),
+            'time_iso': datetime.now().isoformat(),
+            'event_type': event_type,
+            'details': details or {}
+        }
+        with self._lock:
+            self.events.append(event)
+    
+    def start(self):
+        """Start background monitoring."""
+        if not self.enabled:
+            return
+        
+        self.start_time = time.time()
+        self.samples = []
+        self.events = []
+        self._stop_event.clear()
+        
+        # Record initial status
+        self.add_event('monitoring_started', {'start_time': self.start_time})
+        
+        # Start polling thread
+        self._thread = threading.Thread(target=self._polling_loop, daemon=True)
+        self._thread.start()
+        print(f"   Proxmox monitoring started (polling every {self.config.get('poll_interval', 2)}s)")
+    
+    def stop(self):
+        """Stop background monitoring and collect final data."""
+        if not self.enabled:
+            return {}
+        
+        self.end_time = time.time()
+        self._stop_event.set()
+        
+        if self._thread:
+            self._thread.join(timeout=5)
+        
+        self.add_event('monitoring_stopped', {'end_time': self.end_time})
+        
+        # Fetch RRD data for the monitoring period
+        rrd_data = None
+        if self.config.get('fetch_rrd', True):
+            rrd_data = self.get_rrd_data()
+            if isinstance(rrd_data, list):
+                # Filter to our time window
+                rrd_data = [
+                    point for point in rrd_data 
+                    if self.start_time <= point.get('time', 0) <= self.end_time + 60
+                ]
+        
+        return self.get_report(rrd_data)
+    
+    def get_report(self, rrd_data=None):
+        """Generate a monitoring report."""
+        if not self.enabled or not self.samples:
+            return {}
+        
+        duration = (self.end_time or time.time()) - self.start_time
+        
+        # Calculate network transfer during monitoring
+        if len(self.samples) >= 2:
+            net_in_start = self.samples[0]['netin']
+            net_in_end = self.samples[-1]['netin']
+            net_out_start = self.samples[0]['netout']
+            net_out_end = self.samples[-1]['netout']
+            disk_read_start = self.samples[0]['diskread']
+            disk_read_end = self.samples[-1]['diskread']
+            disk_write_start = self.samples[0]['diskwrite']
+            disk_write_end = self.samples[-1]['diskwrite']
+        else:
+            net_in_start = net_in_end = 0
+            net_out_start = net_out_end = 0
+            disk_read_start = disk_read_end = 0
+            disk_write_start = disk_write_end = 0
+        
+        # Calculate statistics
+        cpu_values = [s['cpu_percent'] for s in self.samples]
+        mem_values = [s['mem_percent'] for s in self.samples]
+        
+        report = {
+            'monitoring_period': {
+                'start_time': self.start_time,
+                'start_time_iso': datetime.fromtimestamp(self.start_time).isoformat() if self.start_time else None,
+                'end_time': self.end_time,
+                'end_time_iso': datetime.fromtimestamp(self.end_time).isoformat() if self.end_time else None,
+                'duration_seconds': round(duration, 2),
+                'duration_formatted': f"{int(duration // 60)}m {int(duration % 60)}s"
+            },
+            'samples_collected': len(self.samples),
+            'events_recorded': len(self.events),
+            'cpu_stats': {
+                'min_percent': round(min(cpu_values), 2) if cpu_values else 0,
+                'max_percent': round(max(cpu_values), 2) if cpu_values else 0,
+                'avg_percent': round(sum(cpu_values) / len(cpu_values), 2) if cpu_values else 0
+            },
+            'memory_stats': {
+                'min_percent': round(min(mem_values), 2) if mem_values else 0,
+                'max_percent': round(max(mem_values), 2) if mem_values else 0,
+                'avg_percent': round(sum(mem_values) / len(mem_values), 2) if mem_values else 0
+            },
+            'network_transfer': {
+                'bytes_in': net_in_end - net_in_start,
+                'bytes_out': net_out_end - net_out_start,
+                'mb_in': round((net_in_end - net_in_start) / (1024 * 1024), 2),
+                'mb_out': round((net_out_end - net_out_start) / (1024 * 1024), 2),
+                'avg_speed_mbps_in': round((net_in_end - net_in_start) * 8 / duration / 1e6, 2) if duration > 0 else 0,
+                'avg_speed_mbps_out': round((net_out_end - net_out_start) * 8 / duration / 1e6, 2) if duration > 0 else 0
+            },
+            'disk_io': {
+                'bytes_read': disk_read_end - disk_read_start,
+                'bytes_written': disk_write_end - disk_write_start,
+                'mb_read': round((disk_read_end - disk_read_start) / (1024 * 1024), 2),
+                'mb_written': round((disk_write_end - disk_write_start) / (1024 * 1024), 2)
+            },
+            'samples': self.samples,  # Full time-series data
+            'events': self.events,  # Algorithm events for correlation
+            'rrd_data': rrd_data  # Proxmox RRD data if fetched
+        }
+        
+        return report
+    
+    def save_report(self, output_dir, filename_prefix='proxmox_monitoring'):
+        """Save the monitoring report to JSON file."""
+        if not self.enabled:
+            return None
+        
+        report = self.get_report()
+        if not report:
+            return None
+        
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = output_dir / f"{filename_prefix}_{timestamp}.json"
+        
+        with open(filepath, 'w') as f:
+            json.dump(report, f, indent=2, default=str)
+        
+        return filepath
+
+
+# Global monitor instance (used by run_glacier_monitoring)
+_proxmox_monitor = None
 
 
 # =============================================================================
@@ -1140,6 +1406,18 @@ Examples:
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress progress output')
     
+    # Proxmox monitoring arguments
+    parser.add_argument('--proxmox-monitor', action='store_true',
+                        help='Enable Proxmox VM monitoring during processing')
+    parser.add_argument('--proxmox-host', type=str, default=PROXMOX_CONFIG['host'],
+                        help=f'Proxmox host IP (default: {PROXMOX_CONFIG["host"]})')
+    parser.add_argument('--proxmox-node', type=str, default=PROXMOX_CONFIG['node'],
+                        help=f'Proxmox node name (default: {PROXMOX_CONFIG["node"]})')
+    parser.add_argument('--proxmox-vmid', type=int, default=PROXMOX_CONFIG['vmid'],
+                        help=f'VM ID to monitor (default: {PROXMOX_CONFIG["vmid"]})')
+    parser.add_argument('--proxmox-poll-interval', type=int, default=PROXMOX_CONFIG['poll_interval'],
+                        help=f'Polling interval in seconds (default: {PROXMOX_CONFIG["poll_interval"]})')
+    
     args = parser.parse_args()
     
     # Load configuration
@@ -1174,7 +1452,25 @@ Examples:
         print(f"Snow threshold:    {args.snow_threshold * 100}%")
         print(f"Max scenes/cell:   {args.max_scenes}")
         print(f"Low-memory mode:   {'ON' if config['low_memory'] else 'OFF'}")
+        print(f"Proxmox monitor:   {'ON' if args.proxmox_monitor else 'OFF'}")
         print("=" * 80)
+    
+    # Initialize Proxmox monitor if enabled
+    proxmox_monitor = None
+    if args.proxmox_monitor:
+        proxmox_config = PROXMOX_CONFIG.copy()
+        proxmox_config['enabled'] = True
+        proxmox_config['host'] = args.proxmox_host
+        proxmox_config['node'] = args.proxmox_node
+        proxmox_config['vmid'] = args.proxmox_vmid
+        proxmox_config['poll_interval'] = args.proxmox_poll_interval
+        proxmox_monitor = ProxmoxMonitor(proxmox_config)
+        if verbose:
+            print(f"\nProxmox monitoring configured:")
+            print(f"  Host: {args.proxmox_host}")
+            print(f"  Node: {args.proxmox_node}")
+            print(f"  VM ID: {args.proxmox_vmid}")
+            print(f"  Poll interval: {args.proxmox_poll_interval}s")
     
     # Load seeds
     if verbose:
@@ -1214,6 +1510,11 @@ Examples:
     # Prepare output directory
     output_dir = Path(args.output)
     
+    # Start Proxmox monitoring
+    if proxmox_monitor:
+        proxmox_monitor.start()
+        proxmox_monitor.add_event('algorithm_start', {'seeds_count': len(seeds), 'grid_size': args.grid_size})
+    
     # Run monitoring algorithm
     try:
         results = run_glacier_monitoring(
@@ -1233,12 +1534,33 @@ Examples:
         traceback.print_exc()
         return 1
     
+    # Stop Proxmox monitoring and get report
+    proxmox_report = None
+    if proxmox_monitor:
+        proxmox_monitor.add_event('algorithm_end', {
+            'cells_processed': results['statistics'].get('total_cells_processed', 0),
+            'snow_percentage': results['statistics'].get('snow_ice_percentage', 0)
+        })
+        proxmox_report = proxmox_monitor.stop()
+        
+        # Save Proxmox report
+        report_path = proxmox_monitor.save_report(output_dir, 'proxmox_monitoring')
+        if verbose and report_path:
+            print(f"\nProxmox monitoring report saved: {report_path}")
+            print(f"  Samples collected: {proxmox_report.get('samples_collected', 0)}")
+            print(f"  Network IN: {proxmox_report.get('network_transfer', {}).get('mb_in', 0)} MB")
+            print(f"  Network OUT: {proxmox_report.get('network_transfer', {}).get('mb_out', 0)} MB")
+            print(f"  Avg CPU: {proxmox_report.get('cpu_stats', {}).get('avg_percent', 0)}%")
+            print(f"  Avg Memory: {proxmox_report.get('memory_stats', {}).get('avg_percent', 0)}%")
+    
     # Export results
     try:
         export_results(results, output_dir, config)
     
     except Exception as e:
         print(f"ERROR: Failed to export results: {e}")
+        if proxmox_monitor:
+            proxmox_monitor.stop()  # Ensure monitoring stops on error
         import traceback
         traceback.print_exc()
         return 1
