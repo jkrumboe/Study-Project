@@ -73,6 +73,184 @@ _stac_catalog = None  # Reuse STAC connection
 
 
 # =============================================================================
+# CELL TIMING TRACKER
+# =============================================================================
+
+class CellTimingTracker:
+    """
+    Track processing time for each cell and each processing phase.
+    
+    Provides detailed timing breakdown for:
+    - STAC query time
+    - Zarr data loading time
+    - NDSI computation time
+    - Tile saving time (in low-memory mode)
+    - Spatial expansion time
+    """
+    
+    def __init__(self):
+        """Initialize the timing tracker."""
+        self.cell_timings = []  # List of timing records per cell
+        self.current_cell = None  # Current cell timing in progress
+        self.iteration_timings = []  # Timing summaries per iteration
+        
+    def start_cell(self, cell_id):
+        """Start timing for a new cell."""
+        self.current_cell = {
+            'cell_id': cell_id,
+            'start_time': time.time(),
+            'stac_query_time': 0,
+            'zarr_load_time': 0,
+            'ndsi_compute_time': 0,
+            'tile_save_time': 0,
+            'expansion_time': 0,
+            'total_time': 0,
+            'scenes_found': 0,
+            'scenes_loaded': 0,
+            'snow_percentage': None
+        }
+        
+    def record_stac_query(self, duration, scenes_found=0):
+        """Record STAC query time."""
+        if self.current_cell:
+            self.current_cell['stac_query_time'] = duration
+            self.current_cell['scenes_found'] = scenes_found
+            
+    def record_zarr_load(self, duration, scenes_loaded=0):
+        """Record Zarr loading time."""
+        if self.current_cell:
+            self.current_cell['zarr_load_time'] = duration
+            self.current_cell['scenes_loaded'] = scenes_loaded
+            
+    def record_ndsi_compute(self, duration):
+        """Record NDSI computation time."""
+        if self.current_cell:
+            self.current_cell['ndsi_compute_time'] = duration
+            
+    def record_tile_save(self, duration):
+        """Record tile saving time."""
+        if self.current_cell:
+            self.current_cell['tile_save_time'] = duration
+            
+    def record_expansion(self, duration):
+        """Record spatial expansion time."""
+        if self.current_cell:
+            self.current_cell['expansion_time'] = duration
+            
+    def end_cell(self, snow_percentage=None):
+        """End timing for current cell and store the record."""
+        if self.current_cell:
+            self.current_cell['total_time'] = time.time() - self.current_cell['start_time']
+            self.current_cell['snow_percentage'] = snow_percentage
+            self.cell_timings.append(self.current_cell)
+            self.current_cell = None
+            
+    def start_iteration(self, iteration_num, num_cells):
+        """Start timing for an iteration."""
+        self._current_iteration = {
+            'iteration': iteration_num,
+            'num_cells': num_cells,
+            'start_time': time.time()
+        }
+        
+    def end_iteration(self, cells_processed, cells_with_snow, new_candidates):
+        """End timing for an iteration."""
+        if hasattr(self, '_current_iteration'):
+            self._current_iteration['total_time'] = time.time() - self._current_iteration['start_time']
+            self._current_iteration['cells_processed'] = cells_processed
+            self._current_iteration['cells_with_snow'] = cells_with_snow
+            self._current_iteration['new_candidates'] = new_candidates
+            self.iteration_timings.append(self._current_iteration)
+            
+    def get_summary(self):
+        """Get summary statistics of all cell timings."""
+        if not self.cell_timings:
+            return {}
+            
+        total_cells = len(self.cell_timings)
+        
+        # Calculate aggregated times
+        total_stac = sum(c['stac_query_time'] for c in self.cell_timings)
+        total_zarr = sum(c['zarr_load_time'] for c in self.cell_timings)
+        total_ndsi = sum(c['ndsi_compute_time'] for c in self.cell_timings)
+        total_tile = sum(c['tile_save_time'] for c in self.cell_timings)
+        total_expansion = sum(c['expansion_time'] for c in self.cell_timings)
+        total_cell_time = sum(c['total_time'] for c in self.cell_timings)
+        
+        # Calculate per-cell averages
+        avg_stac = total_stac / total_cells if total_cells > 0 else 0
+        avg_zarr = total_zarr / total_cells if total_cells > 0 else 0
+        avg_ndsi = total_ndsi / total_cells if total_cells > 0 else 0
+        avg_tile = total_tile / total_cells if total_cells > 0 else 0
+        avg_expansion = total_expansion / total_cells if total_cells > 0 else 0
+        avg_total = total_cell_time / total_cells if total_cells > 0 else 0
+        
+        # Calculate time percentages
+        total_processing = total_stac + total_zarr + total_ndsi + total_tile + total_expansion
+        pct_stac = 100 * total_stac / total_processing if total_processing > 0 else 0
+        pct_zarr = 100 * total_zarr / total_processing if total_processing > 0 else 0
+        pct_ndsi = 100 * total_ndsi / total_processing if total_processing > 0 else 0
+        pct_tile = 100 * total_tile / total_processing if total_processing > 0 else 0
+        pct_expansion = 100 * total_expansion / total_processing if total_processing > 0 else 0
+        
+        # Find slowest cells
+        sorted_by_time = sorted(self.cell_timings, key=lambda x: x['total_time'], reverse=True)
+        slowest_cells = sorted_by_time[:5] if len(sorted_by_time) >= 5 else sorted_by_time
+        
+        return {
+            'total_cells_timed': total_cells,
+            'total_times': {
+                'stac_query_seconds': round(total_stac, 2),
+                'zarr_load_seconds': round(total_zarr, 2),
+                'ndsi_compute_seconds': round(total_ndsi, 2),
+                'tile_save_seconds': round(total_tile, 2),
+                'spatial_expansion_seconds': round(total_expansion, 2),
+                'total_cell_processing_seconds': round(total_cell_time, 2)
+            },
+            'average_times_per_cell': {
+                'stac_query_seconds': round(avg_stac, 3),
+                'zarr_load_seconds': round(avg_zarr, 3),
+                'ndsi_compute_seconds': round(avg_ndsi, 3),
+                'tile_save_seconds': round(avg_tile, 3),
+                'spatial_expansion_seconds': round(avg_expansion, 3),
+                'total_seconds': round(avg_total, 3)
+            },
+            'time_distribution_percent': {
+                'stac_query': round(pct_stac, 1),
+                'zarr_load': round(pct_zarr, 1),
+                'ndsi_compute': round(pct_ndsi, 1),
+                'tile_save': round(pct_tile, 1),
+                'spatial_expansion': round(pct_expansion, 1)
+            },
+            'slowest_cells': [
+                {
+                    'cell_id': c['cell_id'],
+                    'total_time': round(c['total_time'], 2),
+                    'stac_query': round(c['stac_query_time'], 2),
+                    'zarr_load': round(c['zarr_load_time'], 2),
+                    'ndsi_compute': round(c['ndsi_compute_time'], 2),
+                    'scenes_loaded': c['scenes_loaded']
+                }
+                for c in slowest_cells
+            ],
+            'iteration_timings': [
+                {
+                    'iteration': it['iteration'],
+                    'cells_processed': it.get('cells_processed', 0),
+                    'total_time_seconds': round(it.get('total_time', 0), 2),
+                    'avg_time_per_cell': round(it.get('total_time', 0) / it.get('cells_processed', 1), 2) if it.get('cells_processed', 0) > 0 else 0
+                }
+                for it in self.iteration_timings
+            ],
+            'per_cell_timings': self.cell_timings
+        }
+
+
+# Global timing tracker instance
+_cell_timing_tracker = None
+
+
+# =============================================================================
 # CONFIGURATION
 # =============================================================================
 
@@ -725,16 +903,20 @@ def compute_median_ndsi_for_cell(stac_items, cell_bounds, epsg_code, ndsi_thresh
         - 'snow_mask': Boolean mask where NDSI >= threshold
         - 'snow_percentage': Percentage of snow/ice pixels (based on valid pixels)
         - 'scene_count': Number of scenes successfully loaded
+        - 'zarr_load_time': Total time spent loading Zarr data
     """
     ndsi_list = []
     scenes_loaded = 0
+    total_zarr_load_time = 0  # Track Zarr loading time
     
     # Load and process each scene
     for idx, item in enumerate(stac_items[:max_scenes]):
         zarr_url = item.assets["product"].href
         
-        # Load Zarr data (handles coordinate transformation automatically)
+        # Load Zarr data (handles coordinate transformation automatically) - timed
+        zarr_load_start = time.time()
         zarr_data = load_zarr_data_for_cell(zarr_url, cell_bounds, epsg_code)
+        total_zarr_load_time += time.time() - zarr_load_start
         
         if zarr_data is None:
             continue
@@ -806,6 +988,7 @@ def compute_median_ndsi_for_cell(stac_items, cell_bounds, epsg_code, ndsi_thresh
         'snow_mask': snow_mask,
         'snow_percentage': snow_percentage,
         'scene_count': scenes_loaded,
+        'zarr_load_time': total_zarr_load_time,
         'ndsi_stats': {
             'min': float(np.nanmin(ndsi_flat_valid)),
             'max': float(np.nanmax(ndsi_flat_valid)),
@@ -970,6 +1153,10 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
     ndsi_results = {} if not low_memory else None
     cell_bounds_dict = {}
     
+    # Initialize timing tracker
+    global _cell_timing_tracker
+    _cell_timing_tracker = CellTimingTracker()
+    
     # Step 2: Iteration loop with spatial expansion
     iteration = 0
     total_processed = 0
@@ -998,6 +1185,9 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
         cells_with_snow = 0
         iteration_start = time.time()
         
+        # Start iteration timing
+        _cell_timing_tracker.start_iteration(iteration, len(unprocessed))
+        
         # Create progress bar for cell processing
         pbar = tqdm(
             unprocessed.iterrows(),
@@ -1014,10 +1204,14 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
             cell_geom = cell_row.geometry
             cell_bounds = cell_geom.bounds
             
+            # Start timing for this cell
+            _cell_timing_tracker.start_cell(cell_id)
+            
             # Update progress bar postfix
             pbar.set_postfix(cell=cell_id, snow=cells_with_snow, added=iteration_adds)
             
-            # Query STAC for this cell
+            # Query STAC for this cell (timed)
+            stac_start = time.time()
             items = query_stac_for_cell(
                 cell=cell_row,
                 date_start=config['date_start'],
@@ -1027,13 +1221,17 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
                 max_cloud_cover=config.get('max_cloud_cover', 50),
                 verbose=False
             )
+            stac_duration = time.time() - stac_start
+            _cell_timing_tracker.record_stac_query(stac_duration, len(items))
             
             if len(items) == 0:
                 grid_idx = grid[grid['cell_id'] == cell_id].index[0]
                 grid.at[grid_idx, 'is_processed'] = True
+                _cell_timing_tracker.end_cell(snow_percentage=None)
                 continue
             
-            # Compute NDSI for this cell
+            # Compute NDSI for this cell (timed - includes Zarr loading)
+            ndsi_start = time.time()
             result = compute_median_ndsi_for_cell(
                 stac_items=items,
                 cell_bounds=cell_bounds,
@@ -1041,23 +1239,33 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
                 ndsi_threshold=config['ndsi_threshold'],
                 max_scenes=config['max_scenes']
             )
+            ndsi_duration = time.time() - ndsi_start
             
             if result is None:
+                _cell_timing_tracker.record_ndsi_compute(ndsi_duration)
                 grid_idx = grid[grid['cell_id'] == cell_id].index[0]
                 grid.at[grid_idx, 'is_processed'] = True
+                _cell_timing_tracker.end_cell(snow_percentage=None)
                 gc.collect()  # Free memory
                 continue
+            
+            # Record NDSI computation time (includes Zarr loading)
+            _cell_timing_tracker.record_zarr_load(result.get('zarr_load_time', 0), result.get('scene_count', 0))
+            _cell_timing_tracker.record_ndsi_compute(ndsi_duration - result.get('zarr_load_time', 0))
             
             # Store result - either in memory or on disk
             snow_pct = result['snow_percentage']
             cell_bounds_dict[cell_id] = cell_bounds
             
             if low_memory and tile_dir:
-                # Save NDSI tile to disk immediately, don't keep in memory
+                # Save NDSI tile to disk immediately (timed)
+                tile_save_start = time.time()
                 tile_path = tile_dir / f"ndsi_cell_{cell_id}.tif"
                 ndsi_da = result['ndsi_median']
                 ndsi_da.rio.write_crs(f"EPSG:{config['epsg_iceland']}", inplace=True)
                 ndsi_da.rio.to_raster(tile_path, driver='GTiff', compress='lzw')
+                tile_save_duration = time.time() - tile_save_start
+                _cell_timing_tracker.record_tile_save(tile_save_duration)
                 del ndsi_da, result  # Free memory immediately
             else:
                 # Store in memory (original behavior)
@@ -1069,17 +1277,36 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
             grid_idx = grid[grid['cell_id'] == cell_id].index[0]
             grid.at[grid_idx, 'snow_percentage'] = snow_pct
             
-            # Apply spatial expansion
+            # Apply spatial expansion (timed)
+            expansion_start = time.time()
             if snow_pct > 0:
                 cells_with_snow += 1
                 new_adds = apply_spatial_expansion(
                     grid, cell_id, snow_pct, threshold=config['snow_percentage_threshold']
                 )
                 iteration_adds += new_adds
+            expansion_duration = time.time() - expansion_start
+            _cell_timing_tracker.record_expansion(expansion_duration)
             
             # Mark as processed
             grid.at[grid_idx, 'is_processed'] = True
             total_processed += 1
+            
+            # End timing for this cell
+            _cell_timing_tracker.end_cell(snow_percentage=snow_pct)
+            
+            # Log event to Proxmox monitor for correlation (if enabled)
+            if _proxmox_monitor and _proxmox_monitor.enabled:
+                cell_timing = _cell_timing_tracker.cell_timings[-1] if _cell_timing_tracker.cell_timings else {}
+                _proxmox_monitor.add_event('cell_processed', {
+                    'cell_id': cell_id,
+                    'snow_percentage': snow_pct,
+                    'stac_query_time': cell_timing.get('stac_query_time', 0),
+                    'zarr_load_time': cell_timing.get('zarr_load_time', 0),
+                    'ndsi_compute_time': cell_timing.get('ndsi_compute_time', 0),
+                    'tile_save_time': cell_timing.get('tile_save_time', 0),
+                    'total_time': cell_timing.get('total_time', 0)
+                })
             
             # Force garbage collection to free memory
             gc.collect()
@@ -1087,14 +1314,27 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
         # Close progress bar
         pbar.close()
         
-        # Close progress bar
-        pbar.close()
+        # Calculate iteration time
+        iteration_time = time.time() - iteration_start
+        
+        # End iteration timing
+        _cell_timing_tracker.end_iteration(len(unprocessed), cells_with_snow, iteration_adds)
+        
+        # Log iteration event to Proxmox monitor
+        if _proxmox_monitor and _proxmox_monitor.enabled:
+            _proxmox_monitor.add_event('iteration_completed', {
+                'iteration': iteration,
+                'cells_processed': len(unprocessed),
+                'cells_with_snow': cells_with_snow,
+                'new_candidates': iteration_adds,
+                'iteration_time': iteration_time
+            })
         
         total_expansion_adds += iteration_adds
-        iteration_time = time.time() - iteration_start
         
         if verbose:
             print(f"   Summary: {len(unprocessed)} processed, {cells_with_snow} with snow, {iteration_adds} new candidates")
+            print(f"   Iteration time: {iteration_time:.1f}s ({iteration_time/len(unprocessed):.2f}s/cell avg)")
     
     # Print summary of failed Zarr stores
     if verbose and len(_failed_zarr_urls) > 0:
@@ -1135,6 +1375,9 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
         # Calculate total processing time
         total_processing_time = time.time() - algorithm_start_time
         
+        # Get timing summary
+        timing_summary = _cell_timing_tracker.get_summary() if _cell_timing_tracker else {}
+        
         statistics = {
             'total_cells_processed': total_processed,
             'initial_candidates': int(initial_candidates),
@@ -1148,7 +1391,8 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
             'mode': 'low_memory',
             'tile_directory': str(tile_dir) if tile_dir else None,
             'processing_time_seconds': round(total_processing_time, 2),
-            'processing_time_formatted': f"{int(total_processing_time // 60)}m {int(total_processing_time % 60)}s"
+            'processing_time_formatted': f"{int(total_processing_time // 60)}m {int(total_processing_time % 60)}s",
+            'cell_timing': timing_summary
         }
         
         ndsi_combined = None
@@ -1215,6 +1459,9 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
         snow_area_km2 = (snow_pixels * 10 * 10) / 1e6
         total_area_km2 = (valid_pixels * 10 * 10) / 1e6
         
+        # Get timing summary
+        timing_summary = _cell_timing_tracker.get_summary() if _cell_timing_tracker else {}
+        
         statistics = {
             'total_cells_processed': total_processed,
             'initial_candidates': int(initial_candidates),
@@ -1227,7 +1474,8 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
             'snow_ice_percentage': 100.0 * snow_pixels / valid_pixels if valid_pixels > 0 else 0,
             'mode': 'normal',
             'processing_time_seconds': round(time.time() - algorithm_start_time, 2),
-            'processing_time_formatted': f"{int((time.time() - algorithm_start_time) // 60)}m {int((time.time() - algorithm_start_time) % 60)}s"
+            'processing_time_formatted': f"{int((time.time() - algorithm_start_time) // 60)}m {int((time.time() - algorithm_start_time) % 60)}s",
+            'cell_timing': timing_summary
         }
     
     # Print final statistics
@@ -1248,6 +1496,31 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
         if low_memory and tile_dir:
             print(f"Tiles saved to:               {tile_dir}")
         print(f"Processing time:              {statistics['processing_time_formatted']}")
+        
+        # Print timing breakdown if available
+        if 'cell_timing' in statistics and statistics['cell_timing']:
+            timing = statistics['cell_timing']
+            print("\n" + "-" * 40)
+            print("CELL PROCESSING TIME BREAKDOWN")
+            print("-" * 40)
+            if 'total_times' in timing:
+                tt = timing['total_times']
+                print(f"Total STAC query time:        {tt.get('stac_query_seconds', 0):.1f}s")
+                print(f"Total Zarr load time:         {tt.get('zarr_load_seconds', 0):.1f}s")
+                print(f"Total NDSI compute time:      {tt.get('ndsi_compute_seconds', 0):.1f}s")
+                print(f"Total tile save time:         {tt.get('tile_save_seconds', 0):.1f}s")
+                print(f"Total expansion time:         {tt.get('spatial_expansion_seconds', 0):.1f}s")
+            if 'time_distribution_percent' in timing:
+                td = timing['time_distribution_percent']
+                print(f"\nTime distribution:")
+                print(f"  STAC query:                 {td.get('stac_query', 0):.1f}%")
+                print(f"  Zarr loading:               {td.get('zarr_load', 0):.1f}%")
+                print(f"  NDSI computation:           {td.get('ndsi_compute', 0):.1f}%")
+                print(f"  Tile saving:                {td.get('tile_save', 0):.1f}%")
+                print(f"  Spatial expansion:          {td.get('spatial_expansion', 0):.1f}%")
+            if 'average_times_per_cell' in timing:
+                at = timing['average_times_per_cell']
+                print(f"\nAverage time per cell:        {at.get('total_seconds', 0):.2f}s")
         print("=" * 80)
     
     return {
