@@ -1243,6 +1243,15 @@ Examples:
         traceback.print_exc()
         return 1
     
+    # Display all configuration settings
+    if verbose:
+        print("\n" + "=" * 60)
+        print("CONFIGURATION SETTINGS USED")
+        print("=" * 60)
+        for key, value in sorted(config.items()):
+            print(f"  {key}: {value}")
+        print("=" * 60)
+    
     if verbose:
         print("\nGlacier monitoring completed successfully!")
     
