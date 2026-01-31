@@ -258,7 +258,7 @@ DEFAULT_CONFIG = {
     'stac_url': "https://stac.core.eopf.eodc.eu",  # EOPF STAC Catalog endpoint
     'date_start': "2025-07-01",  # Start date (YYYY-MM-DD)
     'date_end': "2025-07-31",  # End date (YYYY-MM-DD)
-    'max_iterations': 50,  # Maximum iterations for spatial expansion
+    'max_iterations': 2,  # Maximum iterations for spatial expansion
     'max_scenes': 100,  # Maximum scenes to process per cell
     'low_memory': True  # Memory-efficient mode: write results to disk incrementally
 }
@@ -266,7 +266,7 @@ DEFAULT_CONFIG = {
 # Proxmox monitoring configuration
 PROXMOX_CONFIG = {
     'enabled': False,  # Set to True to enable Proxmox monitoring
-    'host': '192.168.2.119',
+    'host': '100.82.211.46',
     'port': 8006,
     'node': 'think1',
     'vmid': 103,
@@ -1402,8 +1402,8 @@ def export_results(results, output_dir, config):
     
     Exports:
     - Grid with processed cells as GeoJSON
-    - Combined NDSI as GeoTIFF (only in normal mode)
-    - Snow/Ice mask as GeoTIFF (only in normal mode)
+    - Combined NDSI as GeoTIFF
+    - Snow/Ice mask as GeoTIFF
     - Statistics as JSON
     
     Parameters:
@@ -1439,10 +1439,111 @@ def export_results(results, output_dir, config):
     print(f"[1/4] Grid exported: {grid_output}")
     
     if low_memory:
-        # In low-memory mode, tiles are already saved
+        # In low-memory mode, combine tiles into single GeoTIFFs
         tile_dir = results.get('tile_dir')
-        print(f"[2/4] NDSI tiles already saved: {tile_dir}")
-        print(f"[3/4] Snow masks: Generate from tiles using NDSI threshold {config['ndsi_threshold']}")
+        print(f"      NDSI tiles location: {tile_dir}")
+        
+        if tile_dir and tile_dir.exists():
+            tile_files = list(tile_dir.glob("*.tif"))
+            
+            if len(tile_files) > 0:
+                print(f"      Combining {len(tile_files)} tiles into unified GeoTIFFs...")
+                
+                # Read all tiles to determine global extent
+                tile_data = []
+                for tile_path in tile_files:
+                    try:
+                        with rasterio.open(tile_path) as src:
+                            data = src.read(1)
+                            bounds = src.bounds
+                            crs = src.crs
+                            tile_data.append({
+                                'data': data,
+                                'bounds': bounds,
+                                'transform': src.transform
+                            })
+                    except Exception as e:
+                        print(f"    Warning: Could not read tile {tile_path.name}: {e}")
+                
+                if len(tile_data) > 0:
+                    # Calculate global extent
+                    global_minx = min(t['bounds'].left for t in tile_data)
+                    global_miny = min(t['bounds'].bottom for t in tile_data)
+                    global_maxx = max(t['bounds'].right for t in tile_data)
+                    global_maxy = max(t['bounds'].top for t in tile_data)
+                    
+                    # Create combined grid (10m resolution)
+                    resolution = 10
+                    combined_width = int((global_maxx - global_minx) / resolution)
+                    combined_height = int((global_maxy - global_miny) / resolution)
+                    combined_ndsi = np.full((combined_height, combined_width), np.nan, dtype=np.float32)
+                    
+                    # Fill in NDSI values from each tile
+                    for tile in tile_data:
+                        bounds = tile['bounds']
+                        data = tile['data']
+                        
+                        # Calculate position in combined grid
+                        x_start = int((bounds.left - global_minx) / resolution)
+                        y_start = int((global_maxy - bounds.top) / resolution)  # Y is inverted in raster
+                        
+                        # Insert data
+                        h, w = data.shape
+                        combined_ndsi[y_start:y_start+h, x_start:x_start+w] = data
+                    
+                    # Create transform for combined raster
+                    combined_transform = from_bounds(global_minx, global_miny, global_maxx, global_maxy, 
+                                                     combined_width, combined_height)
+                    
+                    # Export combined NDSI as GeoTIFF
+                    ndsi_output = output_dir / f"ndsi_combined_{timestamp}.tif"
+                    with rasterio.open(
+                        ndsi_output, 'w',
+                        driver='GTiff',
+                        height=combined_height,
+                        width=combined_width,
+                        count=1,
+                        dtype=np.float32,
+                        crs=f"EPSG:{config['epsg_iceland']}",
+                        transform=combined_transform,
+                        compress='lzw'
+                    ) as dst:
+                        dst.write(combined_ndsi, 1)
+                    print(f"[2/4] NDSI raster exported: {ndsi_output}")
+                    
+                    # Create and export snow mask
+                    snow_mask = (combined_ndsi >= config['ndsi_threshold']).astype(np.uint8)
+                    # Set NaN areas to 0 in mask (they were False from comparison with NaN)
+                    snow_mask[np.isnan(combined_ndsi)] = 255  # Use 255 as nodata for mask
+                    
+                    mask_output = output_dir / f"snow_mask_{timestamp}.tif"
+                    with rasterio.open(
+                        mask_output, 'w',
+                        driver='GTiff',
+                        height=combined_height,
+                        width=combined_width,
+                        count=1,
+                        dtype=np.uint8,
+                        crs=f"EPSG:{config['epsg_iceland']}",
+                        transform=combined_transform,
+                        compress='lzw',
+                        nodata=255
+                    ) as dst:
+                        dst.write(snow_mask, 1)
+                    print(f"[3/4] Snow mask exported: {mask_output}")
+                    
+                    # Free memory
+                    del combined_ndsi, snow_mask, tile_data
+                    gc.collect()
+                else:
+                    print(f"[2/4] NDSI raster: skipped (no valid tiles)")
+                    print(f"[3/4] Snow mask: skipped (no valid tiles)")
+            else:
+                print(f"[2/4] NDSI raster: skipped (no tiles found)")
+                print(f"[3/4] Snow mask: skipped (no tiles found)")
+        else:
+            print(f"[2/4] NDSI raster: skipped (tile directory not available)")
+            print(f"[3/4] Snow mask: skipped (tile directory not available)")
     else:
         # 2. Export combined NDSI as GeoTIFF
         if results['ndsi_combined'] is not None:

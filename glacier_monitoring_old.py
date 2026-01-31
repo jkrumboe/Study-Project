@@ -64,7 +64,7 @@ DEFAULT_CONFIG = {
     'stac_url': "https://stac.core.eopf.eodc.eu",  # EOPF STAC Catalog endpoint
     'date_start': "2025-07-01",  # Start date (YYYY-MM-DD)
     'date_end': "2025-07-31",  # End date (YYYY-MM-DD)
-    'max_iterations': 50,  # Maximum iterations for spatial expansion
+    'max_iterations': 2,  # Maximum iterations for spatial expansion
     'max_scenes': 100  # Maximum scenes to process per cell
 }
 
