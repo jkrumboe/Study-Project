@@ -1530,8 +1530,6 @@ Examples:
                         help=f'Maximum scenes per cell (default: {DEFAULT_CONFIG["max_scenes"]})')
     parser.add_argument('--max-iterations', type=int, default=DEFAULT_CONFIG['max_iterations'],
                         help=f'Maximum iterations (default: {DEFAULT_CONFIG["max_iterations"]})')
-    parser.add_argument('--max-cloud-cover', type=int, default=DEFAULT_CONFIG['max_cloud_cover'],
-                        help=f'Maximum cloud cover %% to include scenes (default: {DEFAULT_CONFIG["max_cloud_cover"]})')
     parser.add_argument('--low-memory', action='store_true', default=DEFAULT_CONFIG['low_memory'],
                         help='Enable low-memory mode: saves tiles to disk instead of RAM (recommended for large areas)')
     parser.add_argument('--no-low-memory', action='store_true',
@@ -1561,7 +1559,6 @@ Examples:
     config['ndsi_threshold'] = args.ndsi_threshold
     config['snow_percentage_threshold'] = args.snow_threshold
     config['max_scenes'] = args.max_scenes
-    config['max_cloud_cover'] = args.max_cloud_cover
     config['max_iterations'] = args.max_iterations
     
     # Handle low-memory mode flags
