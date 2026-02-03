@@ -1592,19 +1592,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic usage with default parameters
-  python glacier_monitoring.py --seeds data/Iceland_Seeds.geojson --output results
+  # Basic usage with default parameters (run from benchmark folder)
+  python glacier_monitoring_proxmox.py --seeds ../data/Iceland_Seeds.geojson --output ../output/benchmark_run
   
   # Process single seed by FID
-  python glacier_monitoring.py --seeds data/Iceland_Seeds.geojson --fid 5 --output results
+  python glacier_monitoring_proxmox.py --seeds ../data/Iceland_Seeds.geojson --fid 5 --output ../output/benchmark_run
   
   # Custom time period
-  python glacier_monitoring.py --seeds data/Iceland_Seeds.geojson --output results \\
+  python glacier_monitoring_proxmox.py --seeds ../data/Iceland_Seeds.geojson --output ../output/benchmark_run \\
     --date-start 2025-07-01 --date-end 2025-08-31
   
   # Custom thresholds
-  python glacier_monitoring.py --seeds data/Iceland_Seeds.geojson --output results \\
+  python glacier_monitoring_proxmox.py --seeds ../data/Iceland_Seeds.geojson --output ../output/benchmark_run \\
     --ndsi-threshold 0.40 --snow-threshold 0.25
+    
+  # With Proxmox monitoring enabled
+  python glacier_monitoring_proxmox.py --seeds ../data/Iceland_Seeds.geojson --output ../output/benchmark_run \\
+    --proxmox-monitor
         """
     )
     
