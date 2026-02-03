@@ -66,11 +66,6 @@ import urllib3
 # Suppress SSL warnings for Proxmox self-signed certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Global caches to avoid redundant operations
-_failed_zarr_urls = set()  # Track URLs that failed to load
-_scene_cache = {}  # Cache STAC results by bbox tuple
-_stac_catalog = None  # Reuse STAC connection
-
 
 # =============================================================================
 # CELL TIMING TRACKER
@@ -257,7 +252,7 @@ _cell_timing_tracker = None
 DEFAULT_CONFIG = {
     'epsg_iceland': 5325,  # ISN2004 / Lambert 2004 (Iceland's national projection)
     'bounding_box': [1400000, 100000, 2000000, 500000],  # [minx, miny, maxx, maxy] in ISN2004
-    'grid_size': 10000,  # Grid cell size in meters (1 km)
+    'grid_size': 10000,  # Grid cell size in meters (10 km)
     'ndsi_threshold': 0.42,  # Snow/ice classification threshold
     'snow_percentage_threshold': 0.30,  # Spatial expansion threshold (30% coverage)
     'stac_url': "https://stac.core.eopf.eodc.eu",  # EOPF STAC Catalog endpoint
@@ -265,16 +260,13 @@ DEFAULT_CONFIG = {
     'date_end': "2025-07-31",  # End date (YYYY-MM-DD)
     'max_iterations': 2,  # Maximum iterations for spatial expansion
     'max_scenes': 100,  # Maximum scenes to process per cell
-    'low_memory': True,  # Memory-efficient mode: write results to disk incrementally
-    'max_cloud_cover': 50,  # Filter out scenes with more than X% cloud cover (currently disabled)
-    'max_retries': 3,  # Number of retries for failed network requests
-    'validate_zarr': True  # Validate Zarr store accessibility before processing
+    'low_memory': True  # Memory-efficient mode: write results to disk incrementally
 }
 
 # Proxmox monitoring configuration
 PROXMOX_CONFIG = {
     'enabled': False,  # Set to True to enable Proxmox monitoring
-    'host': '192.168.2.119',
+    'host': '100.82.211.46',
     'port': 8006,
     'node': 'think1',
     'vmid': 103,
@@ -626,49 +618,13 @@ def mark_candidate_cells(grid, seeds):
     return grid
 
 
-def get_stac_catalog(stac_url):
-    """
-    Get or create a reusable STAC catalog connection.
-    
-    This avoids creating a new connection for each query, improving performance.
-    """
-    global _stac_catalog
-    if _stac_catalog is None:
-        _stac_catalog = Client.open(stac_url)
-    return _stac_catalog
-
-
-def validate_stac_connection(stac_url, verbose=True):
-    """
-    Validate that the STAC catalog is accessible before processing.
-    
-    Returns True if connection is successful, False otherwise.
-    """
-    try:
-        catalog = get_stac_catalog(stac_url)
-        # Try to get collections to verify connection
-        collections = list(catalog.get_collections())
-        if verbose:
-            print(f"   STAC connection OK: {len(collections)} collections available")
-        return True
-    except Exception as e:
-        if verbose:
-            print(f"   ERROR: Cannot connect to STAC catalog: {e}")
-        return False
-
-
-def query_stac_for_cell(cell, date_start, date_end, epsg_code, stac_url, max_cloud_cover=50, verbose=False):
+def query_stac_for_cell(cell, date_start, date_end, epsg_code, stac_url, verbose=False):
     """
     Query EOPF STAC Catalog for Sentinel-2 L2A scenes covering a grid cell.
     
     This function searches for all Sentinel-2 L2A scenes that intersect with
     the given cell's geometry during the specified time period. It handles
     coordinate transformation from ISN2004 to WGS84 (required by STAC API).
-    
-    Features:
-    - Reuses STAC catalog connection for performance
-    - Caches results by bounding box to avoid redundant queries
-    - Filters by cloud cover to reduce wasted processing
     
     Parameters:
     -----------
@@ -682,8 +638,6 @@ def query_stac_for_cell(cell, date_start, date_end, epsg_code, stac_url, max_clo
         EPSG code of input cell geometry
     stac_url : str
         STAC catalog URL
-    max_cloud_cover : int
-        Maximum cloud cover percentage (0-100)
     verbose : bool
         If True, print progress information
     
@@ -691,63 +645,39 @@ def query_stac_for_cell(cell, date_start, date_end, epsg_code, stac_url, max_clo
     --------
     list : List of STAC items (pystac.Item objects) with Zarr data URLs
     """
-    global _scene_cache
-    
     # Transform cell bounds from ISN2004 to WGS84 (required by STAC API)
     cell_gdf = gpd.GeoDataFrame([cell], crs=f"EPSG:{epsg_code}")
     cell_wgs84 = cell_gdf.to_crs(epsg=4326)
-    bbox_wgs84 = tuple(cell_wgs84.total_bounds)
-    
-    # Create cache key from bbox and date range
-    cache_key = (bbox_wgs84, date_start, date_end, max_cloud_cover)
-    
-    # Return cached results if available
-    if cache_key in _scene_cache:
-        if verbose:
-            print(f"  Using cached STAC results for cell {cell.get('cell_id', 'unknown')}")
-        return _scene_cache[cache_key]
+    bbox_wgs84 = cell_wgs84.total_bounds
     
     if verbose:
         print(f"  Querying STAC for cell {cell.get('cell_id', 'unknown')}: {date_start} to {date_end}")
     
-    # Reuse STAC catalog connection
-    catalog = get_stac_catalog(stac_url)
+    # Connect to EOPF STAC Catalog
+    catalog = Client.open(stac_url)
     
     # Search for Sentinel-2 L2A scenes that intersect the cell
-    # Cloud cover filter commented out to match old script behavior
     search = catalog.search(
         collections=["sentinel-2-l2a"],
         bbox=bbox_wgs84,
         datetime=[date_start, date_end]
-        # query={"eo:cloud_cover": {"lte": max_cloud_cover}}  # Filter cloudy scenes - DISABLED
     )
     
     # Collect results
     items = list(search.items())
     
-    # Sort by cloud cover (least cloudy first)
-    items.sort(key=lambda x: x.properties.get('eo:cloud_cover', 100))
-    
     if verbose:
         print(f"    Found {len(items)} scenes")
-    
-    # Cache results
-    _scene_cache[cache_key] = items
     
     return items
 
 
-def load_zarr_data_for_cell(zarr_url, cell_bounds_isn2004, cell_epsg_isn2004, max_retries=3, verbose_errors=True):
+def load_zarr_data_for_cell(zarr_url, cell_bounds_isn2004, cell_epsg_isn2004):
     """
     Load and extract Zarr data for a specific cell using ESA best practices.
     
     This function handles coordinate transformation from ISN2004 to the product's
     UTM zone, loads only relevant data chunks, and applies quality masking.
-    
-    Features:
-    - Skips URLs that previously failed (to avoid repeated errors)
-    - Retry logic for transient network failures
-    - Suppresses duplicate error messages
     
     Parameters:
     -----------
@@ -757,10 +687,6 @@ def load_zarr_data_for_cell(zarr_url, cell_bounds_isn2004, cell_epsg_isn2004, ma
         Cell bounds in ISN2004 coordinates (minx, miny, maxx, maxy)
     cell_epsg_isn2004 : int
         EPSG code of input coordinates
-    max_retries : int
-        Number of retry attempts for transient failures
-    verbose_errors : bool
-        If False, suppress error messages for known failed URLs
     
     Returns:
     --------
@@ -770,56 +696,16 @@ def load_zarr_data_for_cell(zarr_url, cell_bounds_isn2004, cell_epsg_isn2004, ma
         - 'valid_mask': Quality mask (20m resolution)
         - 'metadata': STAC discovery metadata
     """
-    global _failed_zarr_urls
-    
-    # Skip URLs that have previously failed
-    if zarr_url in _failed_zarr_urls:
-        return None
-    
-    # Retry logic for transient failures
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            # Open Zarr store as DataTree (ESA recommended approach)
-            dt = xr.open_datatree(zarr_url, engine='zarr', chunks={})
-            break  # Success, exit retry loop
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries - 1:
-                time.sleep(1 * (attempt + 1))  # Exponential backoff
-            continue
-    else:
-        # All retries failed
-        _failed_zarr_urls.add(zarr_url)
-        if verbose_errors:
-            scene_name = zarr_url.split('/')[-1]
-            print(f"    ✗ {scene_name}: {last_error}")
-        return None
-    
     try:
+        # Open Zarr store as DataTree (ESA recommended approach)
+        dt = xr.open_datatree(zarr_url, engine='zarr', chunks={})
         
         # Extract metadata
         metadata = dt.attrs.get('stac_discovery', {})
         product_epsg = metadata.get('properties', {}).get('proj:epsg')
         
-        # If EPSG is not in metadata, infer it from the tile ID in the URL
-        # URL format includes tile ID like T28WDS (UTM zone 28, latitude band W, grid square DS)
-        if product_epsg is None:
-            # Extract tile ID from URL (e.g., "...T28WDS_20251019..." -> "T28WDS")
-            import re
-            tile_match = re.search(r'_T(\d{2})([A-Z])([A-Z]{2})_', zarr_url)
-            if tile_match:
-                zone = int(tile_match.group(1))
-                lat_band = tile_match.group(2)
-                # Northern hemisphere: C-X (excluding I and O), Southern: A-M (excluding I and O)
-                # Iceland is in bands V-W, which is Northern hemisphere
-                if lat_band >= 'N':
-                    product_epsg = 32600 + zone  # UTM Northern hemisphere
-                else:
-                    product_epsg = 32700 + zone  # UTM Southern hemisphere
-        
         # Transform coordinates from ISN2004 to product UTM zone
-        if product_epsg is not None and product_epsg != cell_epsg_isn2004:
+        if product_epsg != cell_epsg_isn2004:
             transformer = Transformer.from_crs(cell_epsg_isn2004, product_epsg, always_xy=True)
             minx_in, miny_in, maxx_in, maxy_in = cell_bounds_isn2004
             (minx_utm, miny_utm) = transformer.transform(minx_in, miny_in)
@@ -851,8 +737,7 @@ def load_zarr_data_for_cell(zarr_url, cell_bounds_isn2004, cell_epsg_isn2004, ma
         y_mask_scl = (scl.y >= miny_utm) & (scl.y <= maxy_utm)
         valid_clipped = valid_mask.sel(x=scl.x[x_mask_scl], y=scl.y[y_mask_scl])
         
-        # Apply quality mask to B11 only (matching old script behavior)
-        # Note: B03 is NOT masked to match glacier_monitoring_old.py
+        # Apply quality mask to B11
         b11_clipped = b11_clipped.where(valid_clipped)
         
         # Check if data is empty
@@ -863,8 +748,7 @@ def load_zarr_data_for_cell(zarr_url, cell_bounds_isn2004, cell_epsg_isn2004, ma
             'b03': b03_clipped,
             'b11': b11_clipped,
             'valid_mask': valid_clipped,
-            'metadata': metadata,
-            'product_epsg': product_epsg  # Include the resolved EPSG code
+            'metadata': metadata
         }
         
     except Exception as e:
@@ -939,12 +823,7 @@ def compute_median_ndsi_for_cell(stac_items, cell_bounds, epsg_code, ndsi_thresh
         target_x = np.arange(minx, maxx, 10)
         target_y = np.arange(miny, maxy, 10)
         
-        # Use the product_epsg from zarr_data (already resolved from metadata or inferred from tile ID)
-        product_epsg = zarr_data.get('product_epsg')
-        if product_epsg is None:
-            # Skip this scene if we couldn't determine the CRS
-            continue
-        
+        product_epsg = zarr_data['metadata'].get('properties', {}).get('proj:epsg')
         ndsi_with_crs = ndsi.rio.write_crs(f"EPSG:{product_epsg}")
         ndsi_with_crs = ndsi_with_crs.rio.write_nodata(np.nan)
         
@@ -1099,24 +978,12 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
     # Track total processing time
     algorithm_start_time = time.time()
     
-    # Reset global caches for each run
-    global _failed_zarr_urls, _scene_cache, _stac_catalog
-    _failed_zarr_urls = set()
-    _scene_cache = {}
-    _stac_catalog = None
-    
     if verbose:
         print("=" * 80)
         print("GLACIER MONITORING ALGORITHM - SPATIAL EXPANSION")
         if low_memory:
             print("(LOW MEMORY MODE: Writing tiles to disk)")
         print("=" * 80)
-    
-    # Validate STAC connection before processing
-    if verbose:
-        print("\n[Step 0] Validating STAC connection...")
-    if not validate_stac_connection(config['stac_url'], verbose):
-        raise ConnectionError(f"Cannot connect to STAC catalog at {config['stac_url']}")
     
     # Create temp directory for tiles in low-memory mode
     tile_dir = None
@@ -1218,7 +1085,6 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
                 date_end=config['date_end'],
                 epsg_code=config['epsg_iceland'],
                 stac_url=config['stac_url'],
-                max_cloud_cover=config.get('max_cloud_cover', 50),
                 verbose=False
             )
             stac_duration = time.time() - stac_start
@@ -1335,12 +1201,6 @@ def run_glacier_monitoring(seeds, config, verbose=True, output_dir=None):
         if verbose:
             print(f"   Summary: {len(unprocessed)} processed, {cells_with_snow} with snow, {iteration_adds} new candidates")
             print(f"   Iteration time: {iteration_time:.1f}s ({iteration_time/len(unprocessed):.2f}s/cell avg)")
-    
-    # Print summary of failed Zarr stores
-    if verbose and len(_failed_zarr_urls) > 0:
-        print(f"\n   ⚠ Warning: {len(_failed_zarr_urls)} unique Zarr stores failed to load")
-        print(f"   This may indicate the data is not yet available on the server.")
-        print(f"   Consider using a different date range or checking the EOPF catalog status.")
     
     # Step 3: Combine results or calculate statistics from tiles
     if low_memory:
@@ -1542,8 +1402,8 @@ def export_results(results, output_dir, config):
     
     Exports:
     - Grid with processed cells as GeoJSON
-    - Combined NDSI as GeoTIFF (only in normal mode)
-    - Snow/Ice mask as GeoTIFF (only in normal mode)
+    - Combined NDSI as GeoTIFF
+    - Snow/Ice mask as GeoTIFF
     - Statistics as JSON
     
     Parameters:
@@ -1579,10 +1439,111 @@ def export_results(results, output_dir, config):
     print(f"[1/4] Grid exported: {grid_output}")
     
     if low_memory:
-        # In low-memory mode, tiles are already saved
+        # In low-memory mode, combine tiles into single GeoTIFFs
         tile_dir = results.get('tile_dir')
-        print(f"[2/4] NDSI tiles already saved: {tile_dir}")
-        print(f"[3/4] Snow masks: Generate from tiles using NDSI threshold {config['ndsi_threshold']}")
+        print(f"      NDSI tiles location: {tile_dir}")
+        
+        if tile_dir and tile_dir.exists():
+            tile_files = list(tile_dir.glob("*.tif"))
+            
+            if len(tile_files) > 0:
+                print(f"      Combining {len(tile_files)} tiles into unified GeoTIFFs...")
+                
+                # Read all tiles to determine global extent
+                tile_data = []
+                for tile_path in tile_files:
+                    try:
+                        with rasterio.open(tile_path) as src:
+                            data = src.read(1)
+                            bounds = src.bounds
+                            crs = src.crs
+                            tile_data.append({
+                                'data': data,
+                                'bounds': bounds,
+                                'transform': src.transform
+                            })
+                    except Exception as e:
+                        print(f"    Warning: Could not read tile {tile_path.name}: {e}")
+                
+                if len(tile_data) > 0:
+                    # Calculate global extent
+                    global_minx = min(t['bounds'].left for t in tile_data)
+                    global_miny = min(t['bounds'].bottom for t in tile_data)
+                    global_maxx = max(t['bounds'].right for t in tile_data)
+                    global_maxy = max(t['bounds'].top for t in tile_data)
+                    
+                    # Create combined grid (10m resolution)
+                    resolution = 10
+                    combined_width = int((global_maxx - global_minx) / resolution)
+                    combined_height = int((global_maxy - global_miny) / resolution)
+                    combined_ndsi = np.full((combined_height, combined_width), np.nan, dtype=np.float32)
+                    
+                    # Fill in NDSI values from each tile
+                    for tile in tile_data:
+                        bounds = tile['bounds']
+                        data = tile['data']
+                        
+                        # Calculate position in combined grid
+                        x_start = int((bounds.left - global_minx) / resolution)
+                        y_start = int((global_maxy - bounds.top) / resolution)  # Y is inverted in raster
+                        
+                        # Insert data
+                        h, w = data.shape
+                        combined_ndsi[y_start:y_start+h, x_start:x_start+w] = data
+                    
+                    # Create transform for combined raster
+                    combined_transform = from_bounds(global_minx, global_miny, global_maxx, global_maxy, 
+                                                     combined_width, combined_height)
+                    
+                    # Export combined NDSI as GeoTIFF
+                    ndsi_output = output_dir / f"ndsi_combined_{timestamp}.tif"
+                    with rasterio.open(
+                        ndsi_output, 'w',
+                        driver='GTiff',
+                        height=combined_height,
+                        width=combined_width,
+                        count=1,
+                        dtype=np.float32,
+                        crs=f"EPSG:{config['epsg_iceland']}",
+                        transform=combined_transform,
+                        compress='lzw'
+                    ) as dst:
+                        dst.write(combined_ndsi, 1)
+                    print(f"[2/4] NDSI raster exported: {ndsi_output}")
+                    
+                    # Create and export snow mask
+                    snow_mask = (combined_ndsi >= config['ndsi_threshold']).astype(np.uint8)
+                    # Set NaN areas to 0 in mask (they were False from comparison with NaN)
+                    snow_mask[np.isnan(combined_ndsi)] = 255  # Use 255 as nodata for mask
+                    
+                    mask_output = output_dir / f"snow_mask_{timestamp}.tif"
+                    with rasterio.open(
+                        mask_output, 'w',
+                        driver='GTiff',
+                        height=combined_height,
+                        width=combined_width,
+                        count=1,
+                        dtype=np.uint8,
+                        crs=f"EPSG:{config['epsg_iceland']}",
+                        transform=combined_transform,
+                        compress='lzw',
+                        nodata=255
+                    ) as dst:
+                        dst.write(snow_mask, 1)
+                    print(f"[3/4] Snow mask exported: {mask_output}")
+                    
+                    # Free memory
+                    del combined_ndsi, snow_mask, tile_data
+                    gc.collect()
+                else:
+                    print(f"[2/4] NDSI raster: skipped (no valid tiles)")
+                    print(f"[3/4] Snow mask: skipped (no valid tiles)")
+            else:
+                print(f"[2/4] NDSI raster: skipped (no tiles found)")
+                print(f"[3/4] Snow mask: skipped (no tiles found)")
+        else:
+            print(f"[2/4] NDSI raster: skipped (tile directory not available)")
+            print(f"[3/4] Snow mask: skipped (tile directory not available)")
     else:
         # 2. Export combined NDSI as GeoTIFF
         if results['ndsi_combined'] is not None:
@@ -1670,8 +1631,6 @@ Examples:
                         help=f'Maximum scenes per cell (default: {DEFAULT_CONFIG["max_scenes"]})')
     parser.add_argument('--max-iterations', type=int, default=DEFAULT_CONFIG['max_iterations'],
                         help=f'Maximum iterations (default: {DEFAULT_CONFIG["max_iterations"]})')
-    parser.add_argument('--max-cloud-cover', type=int, default=DEFAULT_CONFIG['max_cloud_cover'],
-                        help=f'Maximum cloud cover %% to include scenes (default: {DEFAULT_CONFIG["max_cloud_cover"]})')
     parser.add_argument('--low-memory', action='store_true', default=DEFAULT_CONFIG['low_memory'],
                         help='Enable low-memory mode: saves tiles to disk instead of RAM (recommended for large areas)')
     parser.add_argument('--no-low-memory', action='store_true',
@@ -1701,7 +1660,6 @@ Examples:
     config['ndsi_threshold'] = args.ndsi_threshold
     config['snow_percentage_threshold'] = args.snow_threshold
     config['max_scenes'] = args.max_scenes
-    config['max_cloud_cover'] = args.max_cloud_cover
     config['max_iterations'] = args.max_iterations
     
     # Handle low-memory mode flags
