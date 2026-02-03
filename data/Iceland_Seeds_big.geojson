@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "Iceland_Seeds_big",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::5325" } },
+"features": [
+{ "type": "Feature", "properties": { "fid": 13 }, "geometry": { "type": "Point", "coordinates": [ 1810583.059070259332657, 237169.342751981748734 ] } }
+]
+}

@@ -1,0 +1,338 @@
+{
+  "configuration": {
+    "epsg_iceland": 5325,
+    "bounding_box": [
+      1400000,
+      100000,
+      2000000,
+      500000
+    ],
+    "grid_size": 15000,
+    "ndsi_threshold": 0.42,
+    "snow_percentage_threshold": 0.3,
+    "stac_url": "https://stac.core.eopf.eodc.eu",
+    "date_start": "2025-07-01",
+    "date_end": "2025-07-31",
+    "max_iterations": 50,
+    "max_scenes": 100,
+    "low_memory": false
+  },
+  "results": {
+    "total_cells_processed": 16,
+    "initial_candidates": 1,
+    "expansion_added_cells": 15,
+    "iterations": 5,
+    "valid_pixels": 11845143,
+    "snow_ice_pixels": 5135569,
+    "snow_ice_coverage_km2": 513.5569,
+    "total_valid_area_km2": 1184.5143,
+    "snow_ice_percentage": 43.35590545424399,
+    "mode": "normal",
+    "processing_time_seconds": 776.23,
+    "processing_time_formatted": "12m 56s",
+    "cell_timing": {
+      "total_cells_timed": 16,
+      "total_times": {
+        "stac_query_seconds": 8.24,
+        "zarr_load_seconds": 214.15,
+        "ndsi_compute_seconds": 551.74,
+        "tile_save_seconds": 0,
+        "spatial_expansion_seconds": 0.07,
+        "total_cell_processing_seconds": 774.26
+      },
+      "average_times_per_cell": {
+        "stac_query_seconds": 0.515,
+        "zarr_load_seconds": 13.385,
+        "ndsi_compute_seconds": 34.484,
+        "tile_save_seconds": 0.0,
+        "spatial_expansion_seconds": 0.005,
+        "total_seconds": 48.391
+      },
+      "time_distribution_percent": {
+        "stac_query": 1.1,
+        "zarr_load": 27.7,
+        "ndsi_compute": 71.3,
+        "tile_save": 0.0,
+        "spatial_expansion": 0.0
+      },
+      "slowest_cells": [
+        {
+          "cell_id": 553,
+          "total_time": 85.48,
+          "stac_query": 0.84,
+          "zarr_load": 24.2,
+          "ndsi_compute": 60.42,
+          "scenes_loaded": 10
+        },
+        {
+          "cell_id": 512,
+          "total_time": 80.88,
+          "stac_query": 0.64,
+          "zarr_load": 22.07,
+          "ndsi_compute": 58.16,
+          "scenes_loaded": 9
+        },
+        {
+          "cell_id": 554,
+          "total_time": 71.17,
+          "stac_query": 0.63,
+          "zarr_load": 20.06,
+          "ndsi_compute": 50.47,
+          "scenes_loaded": 8
+        },
+        {
+          "cell_id": 552,
+          "total_time": 64.02,
+          "stac_query": 0.52,
+          "zarr_load": 17.96,
+          "ndsi_compute": 45.54,
+          "scenes_loaded": 7
+        },
+        {
+          "cell_id": 511,
+          "total_time": 62.25,
+          "stac_query": 0.67,
+          "zarr_load": 17.76,
+          "ndsi_compute": 43.82,
+          "scenes_loaded": 7
+        }
+      ],
+      "iteration_timings": [
+        {
+          "iteration": 1,
+          "cells_processed": 1,
+          "total_time_seconds": 80.99,
+          "avg_time_per_cell": 80.99
+        },
+        {
+          "iteration": 2,
+          "cells_processed": 4,
+          "total_time_seconds": 241.54,
+          "avg_time_per_cell": 60.38
+        },
+        {
+          "iteration": 3,
+          "cells_processed": 7,
+          "total_time_seconds": 324.03,
+          "avg_time_per_cell": 46.29
+        },
+        {
+          "iteration": 4,
+          "cells_processed": 4,
+          "total_time_seconds": 129.34,
+          "avg_time_per_cell": 32.33
+        }
+      ],
+      "per_cell_timings": [
+        {
+          "cell_id": 512,
+          "start_time": 1770090324.2597651,
+          "stac_query_time": 0.6391804218292236,
+          "zarr_load_time": 22.06766414642334,
+          "ndsi_compute_time": 58.157341957092285,
+          "tile_save_time": 0,
+          "expansion_time": 0.011555194854736328,
+          "total_time": 80.87846970558167,
+          "scenes_found": 11,
+          "scenes_loaded": 9,
+          "snow_percentage": 99.57323791786042
+        },
+        {
+          "cell_id": 471,
+          "start_time": 1770090405.251201,
+          "stac_query_time": 0.5730135440826416,
+          "zarr_load_time": 11.671509265899658,
+          "ndsi_compute_time": 29.676042079925537,
+          "tile_save_time": 0,
+          "expansion_time": 0.009649038314819336,
+          "total_time": 41.932883739471436,
+          "scenes_found": 6,
+          "scenes_loaded": 5,
+          "snow_percentage": 46.16745293672318
+        },
+        {
+          "cell_id": 511,
+          "start_time": 1770090447.282552,
+          "stac_query_time": 0.6736173629760742,
+          "zarr_load_time": 17.755661010742188,
+          "ndsi_compute_time": 43.82189750671387,
+          "tile_save_time": 0,
+          "expansion_time": 3.0994415283203125e-06,
+          "total_time": 62.25448155403137,
+          "scenes_found": 9,
+          "scenes_loaded": 7,
+          "snow_percentage": 12.675914940797112
+        },
+        {
+          "cell_id": 513,
+          "start_time": 1770090509.618762,
+          "stac_query_time": 0.5942528247833252,
+          "zarr_load_time": 14.151190757751465,
+          "ndsi_compute_time": 36.71332287788391,
+          "tile_save_time": 0,
+          "expansion_time": 0.010529041290283203,
+          "total_time": 51.47383952140808,
+          "scenes_found": 7,
+          "scenes_loaded": 5,
+          "snow_percentage": 97.65448020205402
+        },
+        {
+          "cell_id": 553,
+          "start_time": 1770090561.206302,
+          "stac_query_time": 0.8430740833282471,
+          "zarr_load_time": 24.20392942428589,
+          "ndsi_compute_time": 60.42004728317261,
+          "tile_save_time": 0,
+          "expansion_time": 0.014325380325317383,
+          "total_time": 85.48450946807861,
+          "scenes_found": 12,
+          "scenes_loaded": 10,
+          "snow_percentage": 76.26327844581061
+        },
+        {
+          "cell_id": 430,
+          "start_time": 1770090646.7915633,
+          "stac_query_time": 0.392528772354126,
+          "zarr_load_time": 8.088467836380005,
+          "ndsi_compute_time": 23.70107340812683,
+          "tile_save_time": 0,
+          "expansion_time": 3.0994415283203125e-06,
+          "total_time": 32.18452310562134,
+          "scenes_found": 4,
+          "scenes_loaded": 3,
+          "snow_percentage": 0.5425703059740742
+        },
+        {
+          "cell_id": 470,
+          "start_time": 1770090679.0754318,
+          "stac_query_time": 0.45213866233825684,
+          "zarr_load_time": 9.94642186164856,
+          "ndsi_compute_time": 24.32860517501831,
+          "tile_save_time": 0,
+          "expansion_time": 3.0994415283203125e-06,
+          "total_time": 34.72986698150635,
+          "scenes_found": 5,
+          "scenes_loaded": 4,
+          "snow_percentage": 8.87771597316803
+        },
+        {
+          "cell_id": 472,
+          "start_time": 1770090713.9113052,
+          "stac_query_time": 0.46925830841064453,
+          "zarr_load_time": 8.031876564025879,
+          "ndsi_compute_time": 22.833467960357666,
+          "tile_save_time": 0,
+          "expansion_time": 0.019892215728759766,
+          "total_time": 31.35883069038391,
+          "scenes_found": 4,
+          "scenes_loaded": 3,
+          "snow_percentage": 34.61909793656605
+        },
+        {
+          "cell_id": 514,
+          "start_time": 1770090745.376775,
+          "stac_query_time": 0.46616148948669434,
+          "zarr_load_time": 13.923365592956543,
+          "ndsi_compute_time": 28.121423959732056,
+          "tile_save_time": 0,
+          "expansion_time": 2.6226043701171875e-06,
+          "total_time": 42.51362442970276,
+          "scenes_found": 7,
+          "scenes_loaded": 5,
+          "snow_percentage": 0.1305767138193689
+        },
+        {
+          "cell_id": 552,
+          "start_time": 1770090788.0003061,
+          "stac_query_time": 0.5160312652587891,
+          "zarr_load_time": 17.963537454605103,
+          "ndsi_compute_time": 45.54253435134888,
+          "tile_save_time": 0,
+          "expansion_time": 2.86102294921875e-06,
+          "total_time": 64.02474427223206,
+          "scenes_found": 9,
+          "scenes_loaded": 7,
+          "snow_percentage": 0.8706302780676974
+        },
+        {
+          "cell_id": 554,
+          "start_time": 1770090852.1462905,
+          "stac_query_time": 0.6273791790008545,
+          "zarr_load_time": 20.057684898376465,
+          "ndsi_compute_time": 50.474689245224,
+          "tile_save_time": 0,
+          "expansion_time": 0.008699893951416016,
+          "total_time": 71.17107510566711,
+          "scenes_found": 10,
+          "scenes_loaded": 8,
+          "snow_percentage": 100.0
+        },
+        {
+          "cell_id": 594,
+          "start_time": 1770090923.398776,
+          "stac_query_time": 0.4665720462799072,
+          "zarr_load_time": 12.035056352615356,
+          "ndsi_compute_time": 34.80938220024109,
+          "tile_save_time": 0,
+          "expansion_time": 3.0994415283203125e-06,
+          "total_time": 47.31366467475891,
+          "scenes_found": 6,
+          "scenes_loaded": 5,
+          "snow_percentage": 0.015939157957055354
+        },
+        {
+          "cell_id": 431,
+          "start_time": 1770090970.824925,
+          "stac_query_time": 0.41832590103149414,
+          "zarr_load_time": 8.054466724395752,
+          "ndsi_compute_time": 26.828410863876343,
+          "tile_save_time": 0,
+          "expansion_time": 3.5762786865234375e-06,
+          "total_time": 35.30368757247925,
+          "scenes_found": 4,
+          "scenes_loaded": 3,
+          "snow_percentage": 1.684495785631248
+        },
+        {
+          "cell_id": 473,
+          "start_time": 1770091006.228941,
+          "stac_query_time": 0.3696258068084717,
+          "zarr_load_time": 6.098306179046631,
+          "ndsi_compute_time": 15.38323974609375,
+          "tile_save_time": 0,
+          "expansion_time": 3.0994415283203125e-06,
+          "total_time": 21.853909015655518,
+          "scenes_found": 3,
+          "scenes_loaded": 2,
+          "snow_percentage": 0.12071952260137729
+        },
+        {
+          "cell_id": 555,
+          "start_time": 1770091028.18067,
+          "stac_query_time": 0.3634774684906006,
+          "zarr_load_time": 8.052896738052368,
+          "ndsi_compute_time": 18.59889316558838,
+          "tile_save_time": 0,
+          "expansion_time": 2.6226043701171875e-06,
+          "total_time": 27.017810344696045,
+          "scenes_found": 4,
+          "scenes_loaded": 2,
+          "snow_percentage": 0.40193925330460367
+        },
+        {
+          "cell_id": 595,
+          "start_time": 1770091055.2968783,
+          "stac_query_time": 0.3754878044128418,
+          "zarr_load_time": 12.0510835647583,
+          "ndsi_compute_time": 32.33174538612366,
+          "tile_save_time": 0,
+          "expansion_time": 2.86102294921875e-06,
+          "total_time": 44.760820627212524,
+          "scenes_found": 6,
+          "scenes_loaded": 5,
+          "snow_percentage": 0.06511829824180594
+        }
+      ]
+    }
+  }
+}

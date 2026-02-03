@@ -1,6 +1,10 @@
 # Glacier Monitoring Script - Python Dependencies
 # Install with: pip install -r requirements.txt
 
+# =============================================================================
+# CORE GEOSPATIAL PROCESSING
+# =============================================================================
+
 # Geospatial data processing
 geopandas>=0.14.0
 shapely>=2.0.0
@@ -15,9 +19,44 @@ xarray>=2023.0.0
 numpy>=1.24.0
 pandas>=2.0.0
 
+# =============================================================================
+# REMOTE DATA ACCESS
+# =============================================================================
+
 # STAC catalog access
 pystac-client>=0.7.0
 
-# Optional: For better performance with Zarr
+# HTTP filesystem access for remote Zarr stores
+requests>=2.31.0
+aiohttp>=3.9.0
+urllib3>=2.0.0
+
+# =============================================================================
+# PERFORMANCE & DISTRIBUTED COMPUTING
+# =============================================================================
+
+# Zarr data format support
 zarr>=2.16.0
-dask>=2023.0.0
+
+# Distributed/parallel computing (required for notebooks with LocalCluster)
+dask[complete]>=2023.0.0
+
+# Scientific computing (required for xarray interpolation)
+scipy>=1.11.0
+
+# =============================================================================
+# VISUALIZATION
+# =============================================================================
+
+# Interactive mapping
+folium>=0.15.0
+
+# Plotting
+matplotlib>=3.7.0
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
+
+# Progress bars
+tqdm>=4.65.0
