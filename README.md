@@ -98,4 +98,4 @@ The script exports timestamped output files to the specified directory:
 - **Robin Gummels** -- Zarr-optimized algorithm, standalone script
 - **Kian Jay Lenert** -- Seeds
 - **Humam Hikmat** -- Native Sentinel algorithm
-- **Justin Krumboehmer** -- Benchmarking of native algorithm
+- **Justin Krumboehmer** -- Benchmarking
